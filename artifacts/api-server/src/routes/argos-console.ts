@@ -38,6 +38,22 @@ const MAX_MESSAGGIO = 8000;
 /** Un libro in PDF può essere grande; oltre, meglio dividerlo per pagine. */
 export const MAX_FILE = 100 * 1024 * 1024;
 const caricamento = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE, files: 1 } });
+/** Un allegato della chat: un file da leggere nel turno, non un libro. */
+export const MAX_ALLEGATO = 25 * 1024 * 1024;
+export const MAX_ALLEGATI_TURNO = 5;
+/** I formati che Argos legge (argos/ingestion/formati.py): la porta si chiude anche qui. */
+export const FORMATI_ALLEGATI = [
+  ".pdf", ".md", ".markdown", ".mmd", ".txt", ".text", ".epub",
+  ".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".odt", ".ods", ".odp",
+  ".csv", ".tsv", ".html", ".htm", ".json",
+  ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif",
+] as const;
+const caricamentoAllegato = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ALLEGATO, files: 1 } });
+
+export function formatoAllegato(nome: string): boolean {
+  const i = nome.lastIndexOf(".");
+  return i > 0 && (FORMATI_ALLEGATI as readonly string[]).includes(nome.slice(i).toLowerCase());
+}
 
 /** La chiave di un agente: minuscole, cifre e trattini (come in Argos, agenti.py). */
 export function chiaveValida(chiave: unknown): chiave is string {
@@ -555,6 +571,80 @@ router.delete("/ai/argos/console/conversazioni/:id", async (req, res) => {
 // traccia: true chiede ad Argos anche la traccia del ragionamento (retrieval e
 // verifica delle frasi) per l'animazione della scheda Conversazione: la vede
 // solo chi fa il turno, come le fonti della risposta.
+// ─── Gli allegati della conversazione ───────────────────────────────────────
+// Un file si carica nella conversazione (sua, controllata qui) e Argos lo legge
+// subito; il turno dopo lo nomina per id. I dati delle persone non passano:
+// Argos rifiuta i file in cui li trova (argos/api/allegati.py).
+
+// POST /api/ai/argos/console/conversazioni/:id/allegati (multipart: file)
+router.post("/ai/argos/console/conversazioni/:id/allegati", (req, res, next) => {
+  legaContesto(caricamentoAllegato.single("file"))(req, res, (err: any) => {
+    if (err) {
+      const troppo = err?.code === "LIMIT_FILE_SIZE";
+      res.status(troppo ? 413 : 400).json({ error: troppo ? `File oltre ${MAX_ALLEGATO / (1024 * 1024)} MB` : "Caricamento non valido" });
+      return;
+    }
+    next();
+  });
+}, async (req: any, res) => {
+  const userId = utenteDi(req);
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  const file = req.file as { originalname: string; buffer: Buffer; mimetype: string } | undefined;
+  if (!file) { res.status(400).json({ error: "file mancante" }); return; }
+  const nome = String(file.originalname || "").split(/[\\/]/).pop()!.slice(0, 200);
+  if (!formatoAllegato(nome)) {
+    res.status(400).json({ error: `Formato non supportato. Si possono allegare: ${FORMATI_ALLEGATI.join(" ")}` });
+    return;
+  }
+  if ((await conversazioneVisibile(res, userId, req.params.id)) === undefined) return;
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(file.buffer)], { type: file.mimetype || "application/octet-stream" }), nome);
+  form.append("autore", userId);
+  form.append("client_slug", ARGOS_CLIENT_SLUG);
+  try {
+    const r = await fetch(`${ARGOS_URL}/console/conversazioni/${req.params.id}/allegati`, {
+      method: "POST", headers: argosHeaders(), body: form, signal: AbortSignal.timeout(120000),
+    });
+    const d: any = await r.json().catch(() => ({}));
+    // il perché di un file rifiutato (formato, dimensione, dati di persone) è scritto per chi carica
+    if ((r.status === 400 || r.status === 413) && typeof d?.detail === "string" && d.detail.length <= 400) {
+      res.status(r.status).json({ error: d.detail });
+      return;
+    }
+    if (!r.ok) { rispondiErrore(res, r.status, d?.detail); return; }
+    res.json(d);
+  } catch (err: any) {
+    irraggiungibile(res, err);
+  }
+});
+
+// GET /api/ai/argos/console/conversazioni/:id/allegati
+router.get("/ai/argos/console/conversazioni/:id/allegati", async (req, res) => {
+  const userId = utenteDi(req);
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  if ((await conversazioneVisibile(res, userId, req.params.id)) === undefined) return;
+  const d = await leggi(res, `/conversazioni/${req.params.id}/allegati`, { autore: userId });
+  if (d !== undefined) res.json(d);
+});
+
+// DELETE /api/ai/argos/console/conversazioni/:id/allegati/:allegato
+router.delete("/ai/argos/console/conversazioni/:id/allegati/:allegato", async (req, res) => {
+  const userId = utenteDi(req);
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  if (!UUID_RE.test(req.params.allegato)) { res.status(400).json({ error: "allegato non valido" }); return; }
+  if ((await conversazioneVisibile(res, userId, req.params.id)) === undefined) return;
+  const d = await scrivi(res, "DELETE", `/conversazioni/${req.params.id}/allegati/${req.params.allegato}`, undefined, { autore: userId });
+  if (d !== undefined) res.json(d);
+});
+
+/** Gli allegati di un turno: al più cinque id di allegato; altro → null (richiesta non valida). */
+export function allegatiDelTurno(v: unknown): string[] | null {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length > MAX_ALLEGATI_TURNO) return null;
+  if (!v.every((x) => typeof x === "string" && UUID_RE.test(x))) return null;
+  return [...new Set(v as string[])];
+}
+
 router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => {
   const userId = utenteDi(req);
   if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
@@ -567,6 +657,8 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
   }
   if (b.traccia !== undefined && typeof b.traccia !== "boolean") { res.status(400).json({ error: "traccia: sì o no" }); return; }
   const traccia = b.traccia === true;
+  const allegati = allegatiDelTurno(b.allegati);
+  if (allegati === null) { res.status(400).json({ error: `allegati: al più ${MAX_ALLEGATI_TURNO} allegati validi` }); return; }
   const d = await conversazioneVisibile(res, userId, req.params.id);
   if (d === undefined) return;
   // Il token a breve scadenza dell'utente, in ogni turno: sul progetto (l'accesso è
@@ -589,7 +681,7 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
     const upstream = await fetch(`${ARGOS_URL}/console/conversazioni/${req.params.id}/messaggi`, {
       method: "POST",
       headers: argosHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ autore: userId, testo, modalita, traccia, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
+      body: JSON.stringify({ autore: userId, testo, modalita, traccia, allegati, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
       signal: ctrl.signal,
     });
     if (!upstream.ok || !upstream.body) {

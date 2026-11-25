@@ -494,6 +494,71 @@ export function carica(file: File, o: OpzioniCaricamento, suAvanzamento?: (frazi
   });
 }
 
+// ─── i formati che Argos legge ──────────────────────────────────────────────
+/** Gli stessi di argos/ingestion/formati.py (e di routes/argos-console.ts). */
+export const FORMATI_ARGOS = [
+  ".pdf", ".md", ".markdown", ".mmd", ".txt", ".text", ".epub",
+  ".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".odt", ".ods", ".odp",
+  ".csv", ".tsv", ".html", ".htm", ".json",
+  ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif",
+] as const;
+export const MAX_ALLEGATO_MB = 25;
+export const MAX_ALLEGATI_TURNO = 5;
+
+export function estensioneDi(nome: string): string {
+  const i = nome.lastIndexOf(".");
+  return i > 0 ? nome.slice(i).toLowerCase() : "";
+}
+
+/** Un file si può allegare? null se sì, altrimenti il perché (prima di caricarlo). */
+export function perchéNonAllegabile(nome: string, byte: number): string | null {
+  const ext = estensioneDi(nome);
+  if (ext === ".doc" || ext === ".xls" || ext === ".ppt") return `il vecchio formato ${ext} non si legge: salvalo come ${ext}x`;
+  if (!(FORMATI_ARGOS as readonly string[]).includes(ext)) return `formato ${ext || "senza estensione"} non supportato`;
+  if (byte <= 0) return "il file è vuoto";
+  if (byte > MAX_ALLEGATO_MB * 1024 * 1024) return `oltre ${MAX_ALLEGATO_MB} MB`;
+  return null;
+}
+
+/** Un allegato come lo descrive Argos (argos/api/allegati.py). */
+export interface AllegatoConversazione {
+  id: string; nome: string; formato: string; byte: number; caratteri: number;
+  troncato: boolean; immagine: boolean; imparato: boolean; creato: string | null;
+}
+
+/** Carica un file nella conversazione: Argos lo legge subito (o dice perché no). */
+export function caricaAllegato(conversazione: string, file: File, suAvanzamento?: (frazione: number) => void): Promise<AllegatoConversazione> {
+  return new Promise((risolvi, rifiuta) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const x = new XMLHttpRequest();
+    x.open("POST", `${getApiBase()}${BASE}/conversazioni/${encodeURIComponent(conversazione)}/allegati`);
+    x.withCredentials = true;
+    x.upload.onprogress = e => { if (e.lengthComputable) suAvanzamento?.(e.loaded / e.total); };
+    x.onload = () => {
+      let d: any = {};
+      try { d = JSON.parse(x.responseText || "{}"); } catch { /* risposta non JSON */ }
+      if (x.status >= 200 && x.status < 300) risolvi(d as AllegatoConversazione);
+      else rifiuta(new Error(d?.error || `HTTP ${x.status}`));
+    };
+    x.onerror = () => rifiuta(new Error("Collegamento interrotto durante il caricamento"));
+    x.send(form);
+  });
+}
+
+export async function togliAllegato(conversazione: string, allegato: string): Promise<void> {
+  const r = await fetch(`${getApiBase()}${BASE}/conversazioni/${encodeURIComponent(conversazione)}/allegati/${encodeURIComponent(allegato)}`,
+    { method: "DELETE", credentials: "include" });
+  if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+}
+
+/** 1536 → «1,5 kB», 25165824 → «24 MB». */
+export function peso(byte: number): string {
+  if (byte < 1024) return `${byte} B`;
+  if (byte < 1024 * 1024) return `${(byte / 1024).toFixed(byte < 10240 ? 1 : 0).replace(".", ",")} kB`;
+  return `${(byte / (1024 * 1024)).toFixed(byte < 10 * 1024 * 1024 ? 1 : 0).replace(".", ",")} MB`;
+}
+
 // ─── le conversazioni ───────────────────────────────────────────────────────
 export type ModoConversazione = "risposta" | "analisi" | "agente";
 export interface Conversazione {

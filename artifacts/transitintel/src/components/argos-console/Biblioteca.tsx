@@ -13,13 +13,14 @@ import {
   BookOpen, Brain, Check, FileText, Layers, Loader2, Network, Pencil, RotateCcw, Search, Trash2, UploadCloud, X,
 } from "lucide-react";
 import {
-  biblioteca, carica, FASI_CARICAMENTO, faseCaricamento, quandoFa, token,
+  biblioteca, carica, FASI_CARICAMENTO, faseCaricamento, FORMATI_ARGOS, quandoFa, token,
   type Caricamento as Job, type ChunkDocumento, type DocumentoBiblioteca, type OpzioniCaricamento, type StatoCostruzione,
 } from "@/lib/argos-console";
 import { elencoTinte, tintaCategoria } from "@/lib/argos-grafo";
 import { Caricamento, Numero, Pill, Problema, Riquadro, Vuoto, type Tinta } from "./comuni";
 
-const ESTENSIONI = [".pdf", ".md", ".markdown", ".mmd", ".txt", ".text", ".epub"];
+/** Quello che Argos legge: PDF, testi, EPUB e ora anche Office, LibreOffice, CSV, HTML, JSON e immagini. */
+const ESTENSIONI: readonly string[] = FORMATI_ARGOS;
 const MAX_MB = 100;
 const CHIAVE = ["argos-console", "biblioteca"] as const;
 
@@ -97,7 +98,7 @@ function Caricatore({ categorie, dopo }: { categorie: string[]; dopo: () => void
         className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-center transition-colors ${sopra ? "border-primary bg-primary/5" : "border-border"}`}>
         <UploadCloud className={`h-8 w-8 ${sopra ? "text-primary" : "text-muted-foreground"}`} aria-hidden />
         <div className="text-sm font-medium">Trascina qui i documenti</div>
-        <div className="text-[11px] text-muted-foreground">PDF, Markdown, testo, EPUB · fino a {MAX_MB} MB l'uno</div>
+        <div className="text-[11px] text-muted-foreground">PDF, Word, Excel, PowerPoint, LibreOffice, CSV, Markdown, testo, EPUB, immagini · fino a {MAX_MB} MB l'uno</div>
         <button type="button" onClick={() => input.current?.click()}
           className="mt-1 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           Scegli i file

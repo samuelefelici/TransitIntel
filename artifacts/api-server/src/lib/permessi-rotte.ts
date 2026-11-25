@@ -151,6 +151,10 @@ export const CALCOLANO_SENZA_SCRIVERE: ReadonlyArray<readonly [string, string]> 
   // i suoi permessi). Rinominare, archiviare, eliminare, importare: scrittura.
   ["POST", "/ai/argos/console/conversazioni"],
   ["POST", "/ai/argos/console/conversazioni/:id/messaggi"],
+  // allegare un file al prossimo messaggio, e toglierlo: è parte del messaggio,
+  // resta nella conversazione di chi la apre (Argos rifiuta i file con dati di persone)
+  ["POST", "/ai/argos/console/conversazioni/:id/allegati"],
+  ["DELETE", "/ai/argos/console/conversazioni/:id/allegati/:allegato"],
   // letture di molte corse insieme: sono POST solo perché l'elenco delle corse
   // non sta in un indirizzo. Le usano la tabella Corse, i quadri orari, le
   // percorrenze e la scheda del turno guida: senza, chi legge le vede vuote.

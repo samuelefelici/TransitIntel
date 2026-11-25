@@ -31,6 +31,7 @@ import {
   HelpCircle, Zap, Compass, Brain, Sparkles, Route, CalendarDays,
 } from "lucide-react";
 import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
+import { AllegatiMessaggio, BottoneAllega, PilloleAllegati, useAllegati, type AllegatoMessaggio } from "@/components/argos/AllegatiChat";
 import { getApiBase } from "@/lib/api";
 import { annunciaScrittura } from "@/lib/argos-live";
 
@@ -146,6 +147,9 @@ type Msg = {
   error?: string;
   /** Testo utente che ha generato questo turno (per il Riprova). */
   retryText?: string;
+  /** Gli allegati del turno: sul messaggio dell'utente si vedono, sul Riprova si rimandano. */
+  allegati?: AllegatoMessaggio[];
+  retryAllegati?: { ids: string[]; meta: AllegatoMessaggio[] };
   /** Fase muta in corso (es. composizione piano) e note di servizio dal server. */
   phase?: string;
   note?: string;
@@ -680,6 +684,7 @@ function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoi
   onRetry: (text: string) => void;
 }) {
   const isUser = msg.role === "user";
+  const allegati = isUser ? msg.allegati ?? [] : [];
   const tools = msg.tools || [];
   const MAX_CHIPS = 6;
   const hidden = Math.max(0, tools.length - MAX_CHIPS);
@@ -715,6 +720,7 @@ function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoi
           </div>
         )}
 
+        {allegati.length > 0 && <AllegatiMessaggio allegati={allegati} />}
         {(msg.content || (!msg.plan && !msg.error && msg.streaming)) && (
           <div className={`inline-block max-w-full text-left rounded-2xl px-3 py-1.5 text-[11.5px] leading-snug ${
             isUser ? "bg-violet-500/15 border border-violet-400/25 text-violet-100" : "bg-zinc-900/70 border border-white/5 text-zinc-200"
@@ -869,6 +875,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   const profondo = conversazione ? conversazione.modo === "analisi" : deep;
   const tiBlocked = !!projectId && !tiConfigured && effectiveTab === "agente";
   const blocked = !argosReady || tiBlocked || !!solaLettura;
+  // gli allegati: solo in una conversazione salvata, dove Argos li conserva
+  const allegati = useAllegati(conversazione && !solaLettura ? conversazione.id : null);
+  const conAllegati = !!conversazione && !solaLettura;
   const thread = effectiveTab; // thread di storico: 'chat' | 'agente'
 
   // Obiettivi persistenti: il lavoro che l'agente ha in carico sul progetto.
@@ -934,6 +943,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             id: `c${m.seq}`, role: m.ruolo === "assistant" ? "assistant" : "user", content,
             ...(meta.domanda && m.ruolo === "assistant" ? { ask: { ...meta.domanda, answered: [] } } : {}),
             ...(meta.piano_run_id ? { pianoRunId: Number(meta.piano_run_id) } : {}),
+            ...(m.ruolo === "user" && Array.isArray(meta.allegati) && meta.allegati.length
+              ? { allegati: meta.allegati.map((a: any) => ({ nome: String(a?.nome ?? "file"), formato: String(a?.formato ?? ""), byte: Number(a?.byte) || 0 })) }
+              : {}),
           } as Msg;
         });
         // una domanda già seguita da un messaggio dell'utente è risposta: niente bottoni di nuovo
@@ -1043,9 +1055,14 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     } catch { return null; }
   };
 
-  const send = async (textOverride?: string, modeOverride?: AgentMode) => {
-    const text = (textOverride ?? input).trim();
-    if (!text || loading || blocked) return;
+  const send = async (textOverride?: string, modeOverride?: AgentMode,
+                      allegatiOverride?: { ids: string[]; meta: AllegatoMessaggio[] }) => {
+    if (loading || blocked || allegati.inCaricamento) return;
+    const scritto = (textOverride ?? input).trim();
+    // gli allegati pronti partono con questo messaggio (il Riprova rimanda i suoi)
+    const conFile = allegatiOverride ?? (conversazione && textOverride === undefined ? allegati.consegna() : { ids: [], meta: [] });
+    const text = scritto || (conFile.ids.length ? "Leggi gli allegati e dimmi che cosa contengono." : "");
+    if (!text) return;
     const t: ArgosTab = effectiveTab;
     const m: AgentMode = modeOverride ?? agentMode;
     setInput("");
@@ -1058,8 +1075,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     const history = [...msgs.map(x => ({ role: x.role, content: historyContent(x) })), { role: "user" as const, content: text }];
     setMsgs(prev => [
       ...prev,
-      { id: `u${Date.now()}`, role: "user", content: text },
-      { id: `a${Date.now()}`, role: "assistant", content: "", streaming: true, tools: [], retryText: text },
+      { id: `u${Date.now()}`, role: "user", content: text, ...(conFile.meta.length ? { allegati: conFile.meta } : {}) },
+      { id: `a${Date.now()}`, role: "assistant", content: "", streaming: true, tools: [], retryText: text,
+        ...(conFile.ids.length ? { retryAllegati: conFile } : {}) },
     ]);
 
     const ctrl = new AbortController();
@@ -1079,7 +1097,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       ? `/api/ai/argos/console/conversazioni/${conversazione.id}/messaggi`
       : t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
     const body = conversazione
-      ? { testo: text, modalita: m === "auto" ? "agente" : m, ...(osservatore ? { traccia: true } : {}) }
+      ? { testo: text, modalita: m === "auto" ? "agente" : m, ...(osservatore ? { traccia: true } : {}),
+          ...(conFile.ids.length ? { allegati: conFile.ids } : {}) }
       : t === "chat"
         ? { messages: history.slice(-20), projectId, deep }
         : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
@@ -1702,7 +1721,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             undoing={undoingRunId !== null && undoingRunId === x.plan?.id}
             onAskAnswer={labels => answerAsk(x.id, labels)}
             onOther={() => inputRef.current?.focus()}
-            onRetry={t => send(t)}
+            onRetry={t => send(t, undefined, x.retryAllegati)}
           />
         ))}
       </div>
@@ -1796,7 +1815,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             <span className="ml-auto text-zinc-500">le schermate aperte si aggiornano da sole</span>
           </div>
         )}
-        <form onSubmit={e => { e.preventDefault(); send(); }} className="flex items-end gap-2">
+        {conAllegati && <PilloleAllegati lista={allegati.lista} onTogli={allegati.togli} />}
+        <form onSubmit={e => { e.preventDefault(); send(); }} className="flex items-end gap-2"
+          onDragOver={conAllegati ? e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); } : undefined}
+          onDrop={conAllegati ? e => { if (e.dataTransfer.files.length) { e.preventDefault(); allegati.aggiungi(e.dataTransfer.files); } } : undefined}>
+          {conAllegati && <BottoneAllega onFile={f => allegati.aggiungi(f)} disabled={loading || blocked} />}
           <textarea
             ref={inputRef}
             value={input}
@@ -1804,6 +1827,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             onKeyDown={e => {
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
+            onPaste={conAllegati ? e => {
+              // un'immagine incollata (uno screenshot) diventa un allegato
+              const files = Array.from(e.clipboardData?.files ?? []);
+              if (files.length) { e.preventDefault(); allegati.aggiungi(files); }
+            } : undefined}
             rows={1}
             placeholder={solaLettura ? solaLettura : blocked ? "Argos non disponibile…"
               : effectiveTab === "agente" && agentMode === "piano" ? "Cosa deve progettare Argos? (es. il servizio domenicale)…"
@@ -1824,7 +1852,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           ) : (
             <button
               type="submit"
-              disabled={!input.trim() || blocked}
+              disabled={(!input.trim() && !allegati.pronti) || blocked || allegati.inCaricamento}
+              title={allegati.inCaricamento ? "Aspetta che i file siano caricati" : undefined}
               className="shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-violet-400 to-fuchsia-400 hover:brightness-110 disabled:opacity-30 disabled:cursor-not-allowed text-black flex items-center justify-center shadow-[0_0_15px_rgba(139,92,246,0.4)] transition"
             >
               <Send className="w-4 h-4" />
@@ -1836,7 +1865,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
           {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: corse, validità e anche linee nuove · </span>}
-          ⏎ invia · ⇧⏎ nuova riga · l'AI può sbagliare, verifica i dati critici
+          ⏎ invia · ⇧⏎ nuova riga{conAllegati ? " · 📎 trascina o incolla i file (niente dati di persone)" : ""} · l'AI può sbagliare, verifica i dati critici
         </p>
       </div>
     </>
