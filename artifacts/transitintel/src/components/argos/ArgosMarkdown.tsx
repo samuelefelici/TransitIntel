@@ -29,12 +29,16 @@ function CodeBlock({ lang, raw }: { lang: string; raw: string }) {
   return <pre className="text-[10.5px] overflow-x-auto bg-black/40 rounded-lg p-2 my-2"><code>{raw}</code></pre>;
 }
 
-export default function ArgosMarkdown({ children, className }: { children: string; className?: string }) {
+// KaTeX: un carattere che non conosce (€, °, …) dentro una formula lo disegna lo stesso col
+// carattere di sistema; niente avvisi in console a ogni ridisegno.
+const KATEX = [rehypeKatex, { strict: "ignore" }] as const;
+
+function ArgosMarkdown({ children, className }: { children: string; className?: string }) {
   return (
     <div className={className}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={[KATEX as any]}
         components={{
           // Togliamo il <pre> di wrapping: i blocchi speciali si renderizzano da soli.
           pre: ({ children }: any) => <>{children}</>,
@@ -50,3 +54,6 @@ export default function ArgosMarkdown({ children, className }: { children: strin
     </div>
   );
 }
+
+// il testo di una risposta già data non cambia: si ridisegna solo quando cambia
+export default React.memo(ArgosMarkdown);

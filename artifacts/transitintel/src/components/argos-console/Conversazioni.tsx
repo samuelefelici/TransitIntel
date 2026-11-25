@@ -28,7 +28,9 @@ import { StudioNeurale } from "./StudioNeurale";
 
 const ArgosConversation = lazy(() => import("@/components/argos/ArgosConversation"));
 
-const MODI: ModoConversazione[] = ["risposta", "analisi", "agente"];
+/** Il regista di Argos: sceglie la squadra da sé (argos/api/regia.py). */
+const REGISTA = "regista";
+type Scelta = "regia" | ModoConversazione;
 const CHIAVE_ELENCO = "argos-elenco-chiuso";
 
 function leggiElencoChiuso(): boolean {
@@ -263,41 +265,55 @@ function NuovaConversazione({ progettoIniziale, progetti, agenti, inCorso, annul
   annulla: () => void;
   crea: (d: { modo: ModoConversazione; agente: string | null; progetto: string | null; titolo: string }) => Promise<void>;
 }) {
-  // da un progetto si arriva di solito per pianificare: il Pianificatore è la proposta
-  const [modo, setModo] = useState<ModoConversazione>(progettoIniziale ? "agente" : "risposta");
+  // Di partenza lavora Argos, che sceglie da sé la squadra (il regista); da un progetto si
+  // arriva di solito per pianificare e applicare: lì la proposta resta il Pianificatore.
+  const conRegia = agenti.some(a => a.chiave === REGISTA);
+  const [scelta, setScelta] = useState<Scelta>(progettoIniziale ? "agente" : "regia");
   const [agente, setAgente] = useState<string>(progettoIniziale ? "pianificatore" : "analista");
   const [progetto, setProgetto] = useState<string>(progettoIniziale);
   const [titolo, setTitolo] = useState("");
+  const selezionabili = useMemo(() => agenti.filter(a => a.chiave !== REGISTA), [agenti]);
   useEffect(() => {
-    if (agenti.length && !agenti.some(a => a.chiave === agente)) setAgente(agenti[0]!.chiave);
-  }, [agenti, agente]);
+    if (selezionabili.length && !selezionabili.some(a => a.chiave === agente)) setAgente(selezionabili[0]!.chiave);
+  }, [selezionabili, agente]);
+  // un Argos che non ha ancora il regista: la scelta di prima
+  useEffect(() => { if (agenti.length && !conRegia && scelta === "regia") setScelta("risposta"); }, [agenti.length, conRegia, scelta]);
 
-  const scelto = agenti.find(a => a.chiave === agente) ?? null;
-  const serveProgetto = modo === "agente" && agente === "pianificatore";
-  const pronto = !inCorso && (modo !== "agente" || !!scelto) && (!serveProgetto || !!progetto);
+  const modo: ModoConversazione = scelta === "regia" ? "agente" : scelta;
+  const chi = scelta === "regia" ? REGISTA : agente;
+  const scelto = scelta === "agente" ? selezionabili.find(a => a.chiave === agente) ?? null : null;
+  const serveProgetto = scelta === "agente" && agente === "pianificatore";
+  const pronto = !inCorso && (scelta !== "agente" || !!scelto) && (scelta !== "regia" || conRegia)
+    && (!serveProgetto || !!progetto);
+  const scelte: Array<{ k: Scelta; nome: string; spiega: string }> = [
+    ...(conRegia ? [{ k: "regia" as const, nome: "Argos", spiega: "Sceglie da sé gli agenti giusti e li fa lavorare insieme. Consigliato." }] : []),
+    { k: "risposta", nome: NOMI_MODO.risposta, spiega: SPIEGA_MODO.risposta },
+    { k: "analisi", nome: NOMI_MODO.analisi, spiega: SPIEGA_MODO.analisi },
+    { k: "agente", nome: "Un agente preciso", spiega: "Scegli tu chi lavora, fra quelli della squadra." },
+  ];
 
   return (
     <form className="max-w-2xl space-y-4 rounded-xl border border-border bg-card p-4 shadow-sm"
-      onSubmit={e => { e.preventDefault(); if (pronto) void crea({ modo, agente: modo === "agente" ? agente : null, progetto: progetto || null, titolo: titolo.trim() }); }}>
+      onSubmit={e => { e.preventDefault(); if (pronto) void crea({ modo, agente: modo === "agente" ? chi : null, progetto: progetto || null, titolo: titolo.trim() }); }}>
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Nuova conversazione</h2>
         <button type="button" onClick={annulla} className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="Chiudi"><X className="h-4 w-4" aria-hidden /></button>
       </div>
-      <fieldset className="grid gap-2 sm:grid-cols-3">
+      <fieldset className="grid gap-2 sm:grid-cols-2">
         <legend className="mb-1 text-xs font-medium">Come lavora Argos <span className="font-normal text-muted-foreground">(non cambia più)</span></legend>
-        {MODI.map(m => (
-          <label key={m} className={`cursor-pointer rounded-lg border px-3 py-2 text-sm transition-colors ${modo === m ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50"}`}>
-            <input type="radio" name="conv-modo" value={m} checked={modo === m} onChange={() => setModo(m)} className="sr-only" />
-            <span className="block font-medium">{NOMI_MODO[m]}</span>
-            <span className="block text-[11px] text-muted-foreground">{SPIEGA_MODO[m]}</span>
+        {scelte.map(o => (
+          <label key={o.k} className={`cursor-pointer rounded-lg border px-3 py-2 text-sm transition-colors focus-within:ring-2 focus-within:ring-primary/40 ${scelta === o.k ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50"}`}>
+            <input type="radio" name="conv-modo" value={o.k} checked={scelta === o.k} onChange={() => setScelta(o.k)} className="sr-only" />
+            <span className="block font-medium">{o.nome}</span>
+            <span className="block text-[11px] text-muted-foreground">{o.spiega}</span>
           </label>
         ))}
       </fieldset>
-      {modo === "agente" && (
+      {scelta === "agente" && (
         <div>
           <label htmlFor="conv-agente" className="text-xs font-medium">Agente</label>
           <select id="conv-agente" value={agente} onChange={e => setAgente(e.target.value)} className={`mt-1 ${CAMPO}`}>
-            {agenti.map(a => <option key={a.chiave} value={a.chiave}>{a.nome}</option>)}
+            {selezionabili.map(a => <option key={a.chiave} value={a.chiave}>{a.nome}</option>)}
           </select>
           {scelto && <p className="mt-1 text-[11px] text-muted-foreground">{scelto.descrizione}</p>}
         </div>
