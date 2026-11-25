@@ -2230,24 +2230,34 @@ Fatto finora:
   `routes/argos-console.ts`: il token in ogni turno, dopo il controllo
   d'accesso alla conversazione).
 
+- **Argos legge tutto, impara da sé e lavora su tutto Cerbero (25/11).**
+  - *Formati*: Biblioteca e allegati leggono anche Word, Excel, PowerPoint,
+    LibreOffice, CSV/TSV, HTML, JSON e immagini (OCR), con la sola libreria
+    standard e le difese su zip e XML; i fogli diventano tabelle.
+  - *Autoalimentazione*: a caricamento finito i concetti del documento nuovo
+    si estraggono da soli e il cervello si ricostruisce (un giro per una
+    raffica di caricamenti); Argos scrive note di conoscenza nella Biblioteca
+    («Appresi da Argos», con fonti e origine) e ci mette gli allegati che
+    meritano di restare. Niente dati di persone, un tetto al giorno.
+  - *Allegati nella chat*: graffetta, trascinamento o incolla; il file si
+    legge subito, il modello vede le immagini e il testo, e legge il resto a
+    pezzi. Un file con dati di persone (codice fiscale, IBAN, email,
+    cellulare, matricola, data di nascita) si rifiuta al caricamento, per la
+    decisione dell'azienda sui dati del personale.
+  - *Cerbero a 360 gradi*: Consuntivo, Sala Operativa, passeggeri dai
+    validatori (solo somme, sotto 5 nascosti), meteo, tariffe, depositi e
+    trasferimenti, relazioni, calcoli in coda, confronto fra programmi. Sola
+    lettura, col token dell'utente; le risposte perdono i campi delle persone.
+    Registro di Argos: 100 capacità, 21 skill.
+
 ## In sospeso
 
-- **Argos: gli strumenti che mancano**, dalla verifica del 24/11, in ordine di
-  valore:
-  1. il **Consuntivo** (`/api/esercizio/*`): Cerbero lo prevede già per Argos
-     («i token di servizio leggono ma non scrivono»), ma nessuno strumento lo
-     legge. Giornate, esiti delle corse, causali, report del mese; senza gli
-     autori del giornale.
-  2. i **flussi dei passeggeri** (`caronte.tap_events`, `caronte.journeys`):
-     salite e discese per linea, fermata e fascia, incassi; solo conteggi.
-  3. **Sala Operativa**: anomalie e puntualità (`/api/operations/*`), oggi
-     solo in parte (`tpl_live_operations`, `tpl_travel_times`).
-  4. **meteo e servizio** (`/api/weather/*`), **tariffe** (preventivo e
-     simulazione, `/api/fares/quote`, `/api/fares/simulator`), **depositi e
-     trasferimenti** (`/api/depots`, `/api/deadhead-arcs`).
-  5. il **connettore MCP** espone solo Planning Studio (più 4 di Argos): niente
-     documenti, esercizio, turni, parco. Agisce per conto del proprietario del
-     progetto: da decidere che cosa aprire a chi ha la chiave.
+- **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):
+  niente documenti, esercizio, turni, parco, allegati. Agisce per conto del
+  proprietario del progetto: da decidere che cosa aprire a chi ha la chiave.
+- **Argos: la simulazione delle tariffe** (`/api/fares/simulate*`, POST con
+  un corpo da comporre) non è ancora uno strumento: oggi c'è il preventivo fra
+  due fermate.
 - **Argos: l'utente `argos_ro` legge tutto lo schema `public`** (comprese le
   tabelle con le persone e gli utenti, e le future): gli strumenti usano 23
   tabelle di rete, territorio, tariffe, traffico e AVM. Da restringere a
