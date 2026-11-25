@@ -1,16 +1,17 @@
 "use client"
 
-import { useTheme } from "next-themes"
+import { useTema } from "@/hooks/use-tema"
 import { Toaster as Sonner } from "sonner"
 
 type ToasterProps = React.ComponentProps<typeof Sonner>
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  /* il tema dell'app (tappa 7.32): i messaggi seguono chiaro o scuro */
+  const { tema } = useTema()
 
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme={tema === "chiaro" ? "light" : "dark"}
       className="toaster group"
       toastOptions={{
         classNames: {

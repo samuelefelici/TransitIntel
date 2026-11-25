@@ -10,6 +10,7 @@ import { CASA, paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva, type 
 import ArgosLink from "@/components/argos/ArgosLink";
 import logoSidebarImg from "/logosidebar.png";
 import { luogoDellAzienda } from "@/lib/azienda";
+import { SceltaTema, SceltaTemaCompatta } from "./SceltaTema";
 
 /**
  * L'impalcatura dell'app: il menu sul ciclo di lavoro (lib/navigazione.ts) e
@@ -210,6 +211,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <h4 className="font-semibold text-xs mb-0.5 text-primary truncate">{luogoDellAzienda(azienda) ?? azienda.nome}</h4>
               <p className="text-[11px] text-muted-foreground">Sistema attivo</p>
             </div>
+            <SceltaTema />
             <button
               onClick={logout}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all"
@@ -219,7 +221,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         ) : (
-          <div className="mt-auto border-t border-border/30 py-3 flex justify-center">
+          <div className="mt-auto border-t border-border/30 py-3 flex flex-col items-center gap-1">
+            <SceltaTemaCompatta />
             <button
               onClick={logout}
               title="Disconnetti"

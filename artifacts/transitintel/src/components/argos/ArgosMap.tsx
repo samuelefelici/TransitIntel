@@ -12,6 +12,8 @@ import type { MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { MapPin, Loader2 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN: string = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -24,6 +26,8 @@ type GeoRoute = { name?: string; color?: string | null; path?: [number, number][
 type GeoData = { routes?: GeoRoute[]; pois?: { lat: number; lng: number }[]; bbox?: [number, number, number, number] };
 
 export default function ArgosMap({ spec }: { spec: MapSpec }) {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const [data, setData] = React.useState<GeoData | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
@@ -91,7 +95,7 @@ export default function ArgosMap({ spec }: { spec: MapSpec }) {
         ref={mapRef}
         mapboxAccessToken={MAPBOX_TOKEN}
         initialViewState={{ longitude: spec.from?.lng ?? 13.5, latitude: spec.from?.lat ?? 43.6, zoom: 10 }}
-        mapStyle="mapbox://styles/mapbox/dark-v11"
+        mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
         onLoad={(e) => fit(e.target as any)}
         attributionControl={false}
         style={{ width: "100%", height: "100%" }}

@@ -2,6 +2,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import 'mapbox-gl/dist/mapbox-gl.css';
+/* il tema chiaro: le scale di Tailwind rimappate (generato, tappa 7.32) */
+@import './styles/tema-chiaro-scale.css';
 
 @plugin "@tailwindcss/typography";
 
@@ -139,6 +141,129 @@
 .dark {
   /* Force dark mode to be the same, as the app is designed dark mode professional */
 }
+
+/* ── Tema chiaro (tappa 7.32) ──────────────────────────────────────────────
+ * La classe .tema-chiaro su <html> (hooks/use-tema.tsx, scelta della persona
+ * nel menu). Qui le variabili delle superfici, dei testi e degli accenti; le
+ * scale di Tailwind usate direttamente nelle pagine (bg-slate-900, text-white,
+ * text-cyan-300…) sono rimappate in styles/tema-chiaro-scale.css.
+ * Contrasti: testo 15:1 sul fondo, testo secondario 7:1, accento 5:1.
+ */
+html.tema-chiaro {
+  color-scheme: light;
+  --background: 216 33% 97%;
+  --foreground: 222 47% 11%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --card-border: 214 32% 88%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 16%;
+  --popover-border: 214 32% 86%;
+
+  --primary: 199 89% 33%;
+  --primary-foreground: 0 0% 100%;
+  --primary-rgb: 9, 112, 159;
+
+  --secondary: 214 32% 93%;
+  --secondary-foreground: 222 47% 15%;
+
+  --muted: 214 32% 94%;
+  --muted-foreground: 215 19% 35%;
+
+  --accent: 262 62% 50%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 0 72% 44%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 214 28% 85%;
+  --input: 214 28% 80%;
+  --ring: 199 89% 33%;
+
+  --sidebar: 0 0% 100%;
+  --sidebar-foreground: 222 47% 15%;
+  --sidebar-border: 214 28% 86%;
+  --sidebar-primary: 199 89% 33%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 214 32% 94%;
+  --sidebar-accent-foreground: 222 47% 15%;
+  --sidebar-ring: 199 89% 33%;
+
+  --chart-1: 199 89% 36%;
+  --chart-2: 262 62% 52%;
+  --chart-3: 142 71% 30%;
+  --chart-4: 36 100% 40%;
+  --chart-5: 345 75% 46%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.06);
+  --shadow: 0 1px 3px 0 rgb(15 23 42 / 0.08), 0 1px 2px -1px rgb(15 23 42 / 0.06);
+  --shadow-md: 0 4px 6px -1px rgb(15 23 42 / 0.08), 0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --shadow-lg: 0 10px 15px -3px rgb(15 23 42 / 0.08), 0 4px 6px -4px rgb(15 23 42 / 0.06);
+  --shadow-xl: 0 20px 25px -5px rgb(15 23 42 / 0.10), 0 8px 10px -6px rgb(15 23 42 / 0.06);
+
+  --button-outline: rgba(15, 23, 42, .12);
+  --badge-outline: rgba(15, 23, 42, .06);
+  --elevate-1: rgba(15, 23, 42, .03);
+  --elevate-2: rgba(15, 23, 42, .06);
+}
+
+/* la zona delle tariffe (smeraldo) nel chiaro: più scura, per il contrasto sul bianco */
+html.tema-chiaro .fares-zone {
+  --primary: 152 72% 27%;
+  --primary-foreground: 0 0% 100%;
+  --primary-rgb: 19, 118, 74;
+  --accent: 84 70% 28%;
+  --accent-foreground: 0 0% 100%;
+  --ring: 152 72% 30%;
+  --chart-1: 152 72% 30%;
+  --chart-2: 84 70% 32%;
+}
+
+/* i grafici (Recharts) scrivono griglie, assi e riquadri con colori pensati per
+ * lo scuro: nel chiaro li riportiamo ai colori del tema (il CSS vale più degli
+ * attributi; il riquadro, scritto nello stile, vuole !important) */
+html.tema-chiaro .recharts-cartesian-grid line,
+html.tema-chiaro .recharts-polar-grid-concentric path,
+html.tema-chiaro .recharts-polar-grid-concentric polygon,
+html.tema-chiaro .recharts-polar-grid-angle line { stroke: hsl(var(--border)); }
+html.tema-chiaro .recharts-cartesian-axis-line,
+html.tema-chiaro .recharts-cartesian-axis-tick-line { stroke: hsl(var(--muted-foreground) / 0.5); }
+html.tema-chiaro .recharts-cartesian-axis-tick-value,
+html.tema-chiaro .recharts-polar-angle-axis-tick-value,
+html.tema-chiaro .recharts-polar-radius-axis-tick-value { fill: hsl(var(--muted-foreground)); }
+html.tema-chiaro .recharts-label { fill: hsl(var(--foreground)); }
+html.tema-chiaro .recharts-default-tooltip {
+  background: hsl(var(--popover)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--popover-foreground)) !important;
+  box-shadow: var(--shadow-md);
+}
+html.tema-chiaro .recharts-default-tooltip .recharts-tooltip-label { color: hsl(var(--foreground)) !important; }
+html.tema-chiaro .recharts-tooltip-cursor { fill: hsl(var(--muted) / 0.6); }
+
+/* il testo in Markdown scritto per lo scuro (prose-invert) nel chiaro torna scuro su chiaro */
+html.tema-chiaro .prose-invert {
+  --tw-prose-body: #334155; --tw-prose-headings: #0f172a; --tw-prose-lead: #475569;
+  --tw-prose-links: #0e7490; --tw-prose-bold: #0f172a; --tw-prose-counters: #64748b;
+  --tw-prose-bullets: #94a3b8; --tw-prose-hr: #e2e8f0; --tw-prose-quotes: #0f172a;
+  --tw-prose-quote-borders: #cbd5e1; --tw-prose-captions: #64748b; --tw-prose-kbd: #0f172a;
+  --tw-prose-code: #0f172a; --tw-prose-pre-code: #e2e8f0; --tw-prose-pre-bg: #1e293b;
+  --tw-prose-th-borders: #cbd5e1; --tw-prose-td-borders: #e2e8f0;
+}
+
+/* i fondi delle pagine della Fucina (prima scritti nello stile, solo scuri) */
+.fondo-fucina { background: radial-gradient(ellipse at 30% 0%, #1a0a00 0%, #050200 70%, #000 100%); }
+.fondo-fucina-centro { background: radial-gradient(ellipse at 50% 60%, #1a0a00 0%, #0a0500 60%, #000000 100%); }
+html.tema-chiaro .fondo-fucina { background: radial-gradient(ellipse at 30% 0%, #ffedd5 0%, #fdf8f3 55%, hsl(var(--background)) 100%); }
+html.tema-chiaro .fondo-fucina-centro { background: radial-gradient(ellipse at 50% 60%, #ffedd5 0%, #fdf8f3 60%, hsl(var(--background)) 100%); }
+/* un riquadro in vetro scuro (le spiegazioni sulla mappa intermodale) */
+.pannello-notte { background: linear-gradient(145deg, rgba(15,23,42,0.98), rgba(30,20,60,0.98)); }
+html.tema-chiaro .pannello-notte { background: linear-gradient(145deg, rgba(255,255,255,0.98), rgba(243,240,255,0.98)); }
+
+/* un elemento che deve restare bianco anche nel chiaro (QR, anteprime di stampa) */
+.resta-bianco { --color-white: #ffffff; --color-black: #000000; }
 
 /* ── Fares Engine zone: override primary/accent palette to emerald/lime ──
  * Applied via .fares-zone class on <main> when location is in Fares Engine.

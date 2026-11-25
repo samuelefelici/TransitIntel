@@ -2140,7 +2140,7 @@ export default function TimetablesPage() {
               </div>
               {mapShare.qr && (
                 <div className="flex items-center gap-4">
-                  <img src={mapShare.qr} alt="QR code Mappa Orari" className="w-36 h-36 rounded-lg bg-white p-1.5" />
+                  <img src={mapShare.qr} alt="QR code Mappa Orari" className="colori-originali w-36 h-36 rounded-lg bg-white p-1.5" />
                   <div className="space-y-2 text-[11px] text-zinc-400">
                     <p>Stampa il QR alle <b className="text-zinc-200">paline</b> o sulle locandine: il passeggero lo inquadra e apre la mappa dal telefono.</p>
                     <a href={mapShare.qr} download="mappa-orari-qr.png"

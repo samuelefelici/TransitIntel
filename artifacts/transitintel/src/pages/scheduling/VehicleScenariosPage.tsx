@@ -133,7 +133,7 @@ export default function VehicleScenariosPage() {
   }
 
   return (
-    <div className="min-h-screen w-full" style={{ background: "radial-gradient(ellipse at 30% 0%, #1a0a00 0%, #050200 70%, #000 100%)" }}>
+    <div className="min-h-screen w-full fondo-fucina">
       {/* Header */}
       <div className="border-b border-orange-500/15 bg-black/40 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-6 py-3 flex items-center gap-3">

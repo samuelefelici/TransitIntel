@@ -2226,6 +2226,47 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Tema chiaro e nuova pagina di accesso (tappe 7.32 e 7.33)
+
+**Il tema chiaro.** In fondo al menu, sopra «Disconnetti», ci sono tre
+pulsanti: **scuro** (com'era sempre), **chiaro**, **come il sistema**. Nel
+menu compresso un pulsante solo, che passa da una scelta all'altra.
+- La scelta resta nel browser della persona e vale anche nelle altre schede
+  aperte. Chi non sceglie resta sullo scuro.
+- Le mappe con il fondo scuro passano al fondo chiaro; i grafici, i messaggi
+  e la console di Argos seguono il tema (il pulsante di Argos cambia il tema
+  di tutta l'app).
+- La mappa orari pubblica (`/o/…`) resta chiara e la mappa di rete condivisa
+  (`/m/…`) resta scura, qualunque tema abbia chi le apre. Restano bianchi i
+  QR e l'anteprima delle relazioni dei progetti di esercizio.
+- Come funziona: le pagine usano direttamente i colori di Tailwind pensati
+  per lo scuro. Nel tema chiaro `styles/tema-chiaro-scale.css` li rimappa
+  (grigi rovesciati, tinte chiare scurite, fondi tinti schiariti). Il file si
+  genera con `node scripts/genera-tema-chiaro.mjs > src/styles/tema-chiaro-scale.css`
+  (in `artifacts/transitintel`); un test controlla che sia aggiornato.
+
+**La pagina di accesso.** Rifatta: a sinistra che cos'è Cerbero (il ciclo del
+lavoro, dal programma al consuntivo, e quello che gli sta accanto), a destra
+l'accesso con la verifica in due passaggi come prima. Il fondo è una griglia
+in prospettiva in WebGL, ferma per chi ha chiesto al sistema di ridurre il
+movimento; senza WebGL resta una griglia in CSS. Segue il tema chiaro o
+scuro, e ha il suo pulsante del tema in alto a destra.
+- Dopo l'accesso una conferma di un secondo e mezzo («Buon lavoro, …») al
+  posto della sequenza di quasi sette secondi di prima.
+- **Corretto**: subito dopo l'accesso l'app si mostrava per un fotogramma e
+  smontava la pagina di accesso, che ripartiva da capo; l'app entrava solo
+  grazie a un timer rimasto acceso. Ora la pagina resta montata fino alla
+  fine della conferma.
+- Caratteri: Mona Sans e Reddit Mono da Google Fonts, caricati solo da
+  questa pagina (come DM Sans e Outfit del resto dell'app).
+- Tolta la scritta «crittografia end-to-end» della pagina di prima: non era
+  vera. Le due righe sotto il riquadro dicono solo quello che l'app fa.
+
+**Dopo il deploy**: deploy della web. Nessuna migrazione, nessuna variabile,
+nessuna Watch Path. Il primo accesso dopo il deploy mostra la pagina nuova.
+
+**Rollback**: immagine precedente della web.
+
 ### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
 
 **Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:

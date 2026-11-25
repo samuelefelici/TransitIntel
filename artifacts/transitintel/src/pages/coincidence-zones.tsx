@@ -29,6 +29,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { getApiBase } from "@/lib/api";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 const BASE = () => getApiBase();
@@ -169,6 +171,8 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 
 // ─── Component ──────────────────────────────────────────────
 export default function CoincidenceZonesPage() {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const mapRef = useRef<MapRef>(null);
 
@@ -968,7 +972,7 @@ export default function CoincidenceZonesPage() {
         <MapGL
           ref={mapRef}
           initialViewState={{ ...vistaIniziale(azienda), pitch: 0, bearing: 0 }}
-          mapStyle="mapbox://styles/mapbox/dark-v11"
+          mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
           mapboxAccessToken={MAPBOX_TOKEN}
           style={{ width: "100%", height: "100%" }}
           interactiveLayerIds={interactiveLayerIds}

@@ -31,6 +31,8 @@ import {
 import { openReportWindow, exportScenarioReport, exportComparisonReport } from "./scenarios/scenario-report";
 import { useAzienda } from "@/hooks/use-azienda";
 import { intestazioneDocumenti, vistaIniziale } from "@/lib/azienda";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 // ─── Import di percorsi già a sistema (Planner Studio) ───────────────────
 interface ImportVariant { variantId: string; name: string; direction: number; headsign: string | null; stopCount: number; distanceKm: number | null; }
@@ -39,6 +41,8 @@ interface ImportProject { projectId: string; projectName: string; routes: Import
 
 // ─── Component ──────────────────────────────────────────────────────────
 export default function ScenariosPage() {
+  /* il fondo scuro della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   /* la mappa si apre sul centro della rete dell'azienda (Amministrazione › Azienda) */
   const azienda = useAzienda();
   const mapRef = useRef<MapRef>(null);
@@ -731,7 +735,7 @@ export default function ScenariosPage() {
       <Map
         ref={mapRef}
         initialViewState={vistaIniziale(azienda)}
-        mapStyle={MAP_STYLES[viewMode]}
+        mapStyle={stileMappa(MAP_STYLES[viewMode], temaMappa)}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%" }}
         interactiveLayerIds={interactiveLayers}

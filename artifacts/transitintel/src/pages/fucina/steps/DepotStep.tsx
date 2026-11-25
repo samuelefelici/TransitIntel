@@ -15,6 +15,8 @@ import {
   MapPin, Truck, Clock, Zap, Fuel, Navigation, CheckCircle2, Plus,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -58,6 +60,8 @@ interface Props {
 }
 
 export default function DepotStep({ initial, psProjectId, onBack, onComplete }: Props) {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const [depots, setDepots] = useState<Depot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,7 +191,7 @@ export default function DepotStep({ initial, psProjectId, onBack, onComplete }: 
               mapboxAccessToken={MAPBOX_TOKEN}
               initialViewState={{ ...mapCenter, zoom: mappable.length > 0 ? 10 : azienda.centro.zoom }}
               style={{ width: "100%", height: "100%" }}
-              mapStyle="mapbox://styles/mapbox/dark-v11"
+              mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
             >
               <NavigationControl position="top-right" />
 

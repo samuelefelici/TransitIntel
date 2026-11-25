@@ -355,7 +355,7 @@ function KpiTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
             </p>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-48 overflow-y-auto">
               {kpi.coverage.uncoveredStops.map((s) => (
-                <div key={s.stop_id} className="text-xs bg-white border rounded px-2 py-1">
+                <div key={s.stop_id} className="text-xs bg-muted/40 border rounded px-2 py-1">
                   <div className="font-medium truncate">{s.stop_name}</div>
                   <div className="text-muted-foreground font-mono">{s.stop_id}</div>
                 </div>

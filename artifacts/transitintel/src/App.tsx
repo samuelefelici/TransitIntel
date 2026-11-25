@@ -7,6 +7,7 @@ import { toast as toastSonner } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
+import { TemaProvider } from "@/hooks/use-tema";
 import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
@@ -568,7 +569,11 @@ function AuthGate() {
 
   // Se l'utente è autenticato MA siamo nel finestra di animazione post-login,
   // continuiamo a mostrare LoginPage (che ha gia' accessGranted=true e sta animando).
-  const showApp = isAuthenticated && !waitingSequence;
+  /* il primo disegno dopo un accesso: l'effetto qui sopra non ha ancora messo
+   * waitingSequence, ma l'app non va mostrata nemmeno per un fotogramma, altrimenti
+   * il login si smonta e la sua conferma (pages/login.tsx) ricomincia da capo (tappa 7.33) */
+  const appenaEntrato = isAuthenticated && !prevAuth.current;
+  const showApp = isAuthenticated && !waitingSequence && !appenaEntrato;
 
   return (
     <Suspense fallback={<PageLoader />}>
@@ -597,6 +602,7 @@ function AuthGate() {
 function App() {
   return (
     <ErrorBoundary context="App">
+      <TemaProvider>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <AuthProvider>
@@ -612,6 +618,7 @@ function App() {
           </AuthProvider>
         </TooltipProvider>
       </QueryClientProvider>
+      </TemaProvider>
     </ErrorBoundary>
   );
 }

@@ -117,8 +117,7 @@ function SplashScreen({ onEnter, onBack }: { onEnter: () => void; onBack: () => 
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.5 }}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"
-      style={{ background: "radial-gradient(ellipse at 50% 60%, #1a0a00 0%, #0a0500 60%, #000000 100%)" }}
+      className="fondo-fucina-centro fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"
     >
       {[...Array(20)].map((_, i) => (
         <motion.div

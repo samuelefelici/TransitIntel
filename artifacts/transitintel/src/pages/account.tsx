@@ -215,7 +215,7 @@ function VerificaDueFattori({ onCambio }: { onCambio: () => Promise<void> }) {
                 <li>Scrivi il codice a 6 cifre che compare nell'app.</li>
               </ol>
               <div className="flex flex-wrap items-center gap-4">
-                <img src={nuovo.qr} alt="QR da inquadrare con l'app di autenticazione" width={220} height={220} className="rounded-md bg-white p-1" />
+                <img src={nuovo.qr} alt="QR da inquadrare con l'app di autenticazione" width={220} height={220} className="colori-originali rounded-md bg-white p-1" />
                 <div className="min-w-0">
                   <p className="text-xs text-muted-foreground">Chiave</p>
                   <p className="font-mono text-sm break-all select-all">{nuovo.segreto.match(/.{1,4}/g)?.join(" ")}</p>

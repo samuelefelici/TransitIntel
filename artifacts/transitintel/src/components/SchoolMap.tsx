@@ -3,6 +3,8 @@ import Map, { Source, Layer, Popup, MapRef } from "react-map-gl/mapbox";
 import type { LayerProps } from "react-map-gl/mapbox";
 import { GraduationCap, MapPin, Bus } from "lucide-react";
 import { useAzienda } from "@/hooks/use-azienda";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -41,6 +43,8 @@ const V_COLOR: Record<string, string> = {
 
 /* ── Component ──────────────────────────────────────── */
 export default function SchoolMap({ items, routeShapes }: Props) {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const mapRef = useRef<MapRef>(null);
   const [selected, setSelected] = useState<SchoolMapItem | null>(null);
   const [hoveredRoute, setHoveredRoute] = useState<string | null>(null);
@@ -298,7 +302,7 @@ export default function SchoolMap({ items, routeShapes }: Props) {
           zoom: 9.5,
         }}
         style={{ width: "100%", height: "100%" }}
-        mapStyle="mapbox://styles/mapbox/dark-v11"
+        mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
         interactiveLayerIds={["school-circles"]}
         onClick={onClick}
       >

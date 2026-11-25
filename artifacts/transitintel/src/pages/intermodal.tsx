@@ -33,6 +33,8 @@ import {
   PRIORITY_COLORS, POI_ICONS,
   walkCircle, shortHubName, hubIcon, hubGlowColor, hubTransportLabel,
 } from "./intermodal/constants";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -83,6 +85,8 @@ function TrustChip({ trust, fetchedAt }: { trust?: "reale" | "stima" | "assente"
 }
 
 export default function IntermodalPage(props: IntermodalPageProps = {}) {
+  /* il fondo scuro della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const { routeIds, embedded = false, onApplyProposals, poiRadiusKm = 3 } = props;
   const routeIdsKey = routeIds && routeIds.length > 0 ? routeIds.join(",") : "";
@@ -785,8 +789,8 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
           <AnimatePresence>
             {showInfoTooltip && (
               <motion.div initial={{ opacity: 0, y: -5, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -5, scale: 0.95 }}
-                className="absolute right-0 top-8 w-72 z-50 rounded-xl p-3 text-[10px] leading-relaxed text-slate-300 border border-cyan-500/30"
-                style={{ background: "linear-gradient(145deg, rgba(15,23,42,0.98), rgba(30,20,60,0.98))", boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 15px rgba(6,182,212,0.15)" }}>
+                className="pannello-notte absolute right-0 top-8 w-72 z-50 rounded-xl p-3 text-[10px] leading-relaxed text-slate-300 border border-cyan-500/30"
+                style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.35), 0 0 15px rgba(6,182,212,0.15)" }}>
                 <p className="font-semibold text-cyan-400 mb-1.5 text-[11px]">Come funziona l'analisi?</p>
                 <p className="mb-1.5">Per ogni <strong className="text-white">arrivo</strong> di treno, nave o volo, simuliamo il percorso del passeggero:</p>
                 <ol className="list-decimal list-inside space-y-1 text-slate-400">
@@ -812,7 +816,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       <Map
         ref={mapRef}
         initialViewState={{ ...vistaIniziale(azienda), pitch: 45, bearing: -15 }}
-        mapStyle={MAP_STYLES[viewMode]}
+        mapStyle={stileMappa(MAP_STYLES[viewMode], temaMappa)}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%" }}
         interactiveLayerIds={showPois ? ["poi-markers-dot"] : []}

@@ -87,7 +87,7 @@ export default function ProcessReportPage() {
           <ExternalLink className="w-3.5 h-3.5 mr-1" /> Scheda
         </a>
       </div>
-      <div className="flex-1 min-h-0 bg-white">
+      <div className="colori-originali flex-1 min-h-0 bg-white">
         {error ? (
           <div className="p-6 text-sm text-red-400">{error}</div>
         ) : html ? (

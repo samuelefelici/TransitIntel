@@ -27,8 +27,12 @@ import { ViewModeSelector } from "./dashboard/ViewModeSelector";
 import { WeatherWidget } from "./dashboard/WeatherWidget";
 import { useAzienda } from "@/hooks/use-azienda";
 import { vistaIniziale } from "@/lib/azienda";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 export default function Dashboard() {
+  /* il fondo scuro della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   /* la mappa si apre sul centro della rete dell'azienda (Amministrazione › Azienda) */
   const azienda = useAzienda();
   const mapRef = useRef<MapRef>(null);
@@ -474,7 +478,7 @@ export default function Dashboard() {
       <Map
         ref={mapRef}
         initialViewState={vistaIniziale(azienda)}
-        mapStyle={MAP_STYLES[viewMode]}
+        mapStyle={stileMappa(MAP_STYLES[viewMode], temaMappa)}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%", paddingTop: 34 }}
         interactiveLayerIds={interactiveLayers}

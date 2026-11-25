@@ -35,6 +35,8 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { usePlanningFilters } from "./PlanningFiltersContext";
 import { useReti } from "@/hooks/use-reti";
 import { categoriaDi, categorieDelleLinee, siglaDi, type CategoriaLinea } from "@/lib/reti";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -225,6 +227,8 @@ function hslToHex(h: number, s: number, l: number): string {
 /* ──────────────────────────── component ──────────────────────────── */
 
 export default function PlanningAnalysisTab({ feedId }: { feedId: string | null }) {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   // dati base
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [params, setParams] = useState<EconParams | null>(null);
@@ -1012,7 +1016,7 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
                     zoom: 10,
                   }}
                   style={{ width: "100%", height: "100%" }}
-                  mapStyle="mapbox://styles/mapbox/dark-v11"
+                  mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
                   attributionControl={false}
                   interactiveLayerIds={shapes ? ["shapes-line", "shapes-line-hit"] : []}
                   cursor={hoveredRouteId ? "pointer" : "grab"}
