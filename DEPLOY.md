@@ -2296,6 +2296,27 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Pagina di accesso: Argos al centro, italiano e inglese, citazioni vere (tappa 7.35)
+
+- **Argos è il nucleo** e ha la sua sezione subito dopo la prima schermata:
+  un sistema RAG multiagente, con il disegno animato del nucleo, degli
+  agenti e delle fonti (la biblioteca e i dati di Cerbero) e quattro punti
+  (la squadra di agenti, la biblioteca, i dati veri, il guardiano). Nella
+  griglia dei moduli il suo posto lo prendono gli orari al pubblico.
+- **Italiano e inglese**: due pulsanti IT/EN nella barra in alto. La prima
+  volta vale la lingua del browser (italiano se è italiano, se no inglese);
+  la scelta resta nel browser. Anche il riquadro dell'accesso e i messaggi
+  d'errore dell'accesso sono tradotti. Dopo l'accesso l'app resta in
+  italiano.
+- **Niente slogan**: i titoli delle sezioni sono citazioni vere, con autore e
+  opera, controllate alla fonte (Calvino, Turing, Seneca, Kelvin, Schneier,
+  Jane Jacobs). Le fonti sono scritte in testa a `src/lib/accesso.ts`.
+
+**Dopo il deploy**: deploy della web. Nessuna migrazione, nessuna variabile,
+nessuna Watch Path.
+
+**Rollback**: immagine precedente della web.
+
 ### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
 
 **Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:
