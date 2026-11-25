@@ -38,6 +38,8 @@ export interface CorsaNonTrovata {
 export interface Anteprima {
   periodo: { dal: string | null; al: string | null };
   tipiDiGiorno: TipoDiGiorno[];
+  /** il progetto di Fucina nato da un'unità di progettazione: le date dell'unità */
+  dateDellUnita?: string[];
   data?: string;
   tipoDelGiorno?: string;
   gtfs?: { corseDelGiorno: number; serviziAttivi: number };
@@ -96,6 +98,17 @@ export function primaDataUtile(date: string[], oggi: string): string | null {
   return date.find((d) => d >= oggi) ?? date[0] ?? null;
 }
 
+/**
+ * Il tipo di giorno da proporre: quello che contiene la prima data utile
+ * dell'unità di progettazione del progetto, se c'è; altrimenti il primo.
+ */
+export function tipoProposto(tipi: TipoDiGiorno[], dateDellUnita: string[] | undefined, oggi: string): { tipo: TipoDiGiorno; data: string } | null {
+  const d = dateDellUnita?.length ? primaDataUtile(dateDellUnita, oggi) : null;
+  const t = (d ? tipi.find((x) => x.date.includes(d)) : undefined) ?? tipi[0];
+  if (!t) return null;
+  return { tipo: t, data: d && t.date.includes(d) ? d : primaDataUtile(t.date, oggi) ?? t.date[0]! };
+}
+
 export function nomeProposto(data: string): string {
   return `Turni esistenti · ${dataLeggibile(data, false)}`;
 }
@@ -137,12 +150,18 @@ export interface AnteprimaValidita {
   corseDaAggiornare: number;
   corseDelProgettoFuoriDalFile: number;
   dateSpente: number;
+  /** le unità di progettazione del file: una per tipo di giorno con corse del progetto */
+  unita: number;
+  /** solo nell'anteprima: le unità già salvate nel progetto, e quante il file aggiornerebbe */
+  unitaNelProgetto?: number;
+  unitaDaAggiornare?: number;
   elencoNonTrovate: CorsaDaGuardare[];
 }
 
 export interface EsitoValidita extends AnteprimaValidita {
   verifica: { esatte: number; diverse: number; esempi: { tripId: string; inPiu: number; inMeno: number }[] };
   progettiFucinaSincronizzati: number;
+  unitaSalvate: number;
 }
 
 export function anteprimaValidita(psProjectId: string, file: File): Promise<AnteprimaValidita> {
@@ -151,8 +170,8 @@ export function anteprimaValidita(psProjectId: string, file: File): Promise<Ante
   });
 }
 
-export function applicaValidita(psProjectId: string, file: File): Promise<EsitoValidita> {
+export function applicaValidita(psProjectId: string, file: File, conUnita = true): Promise<EsitoValidita> {
   return apiFetch<EsitoValidita>(`/api/planning-studio/projects/${psProjectId}/validita-da-file`, {
-    method: "POST", body: modulo(file, {}), headers: INTESTAZIONI,
+    method: "POST", body: modulo(file, { unita: conUnita ? "si" : "no" }), headers: INTESTAZIONI,
   });
 }

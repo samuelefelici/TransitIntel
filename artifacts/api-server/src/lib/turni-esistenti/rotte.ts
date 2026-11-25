@@ -28,7 +28,7 @@ import { loadProjectAccessible, logActivity } from "../scheduling-projects";
 import { FileTurniNonValido, giorniDelFile, leggiFileTurni, testoDelFile, tipiDiGiorno, turniDelGiorno, type FileTurni } from "./file";
 import { abbinaCorse, corseDelFile, type CorsaGtfs } from "./abbina";
 import { costruisciTurni, residenzaAiTurniGuida } from "./costruisci";
-import { abbinaPerValidita, giorniDa, periodoDelFile, validitaDalFile } from "./validita";
+import { abbinaPerValidita, giorniDa, periodoDelFile, unitaDalFile, validitaDalFile } from "./validita";
 import { computeActiveDatesByTrip, giorniTipoDelProgetto } from "../planning-studio-validity-eval";
 
 const router: IRouter = Router();
@@ -191,9 +191,15 @@ router.post("/scheduling/projects/:id/turni-esistenti/anteprima", limiteImport, 
       if (!file) return;
       const tipi = tipiDiGiorno(giorniDelFile(file));
       const data = dataDallaRichiesta(req.body?.data);
+      /* il progetto nato da un'unità di progettazione: le sue date, per proporre lo stesso tipo di giorno (7.40) */
+      const unitaR = p.validity_unit_id ? await db.execute<{ d: unknown }>(sql`
+        SELECT representative_dates AS d FROM ps_validity_units WHERE id = ${p.validity_unit_id}::uuid`) : { rows: [] as { d: unknown }[] };
+      const dateDellUnita = Array.isArray(unitaR.rows[0]?.d)
+        ? (unitaR.rows[0]!.d as unknown[]).map(String).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort() : [];
       const base = {
         periodo: { dal: file.dal, al: file.al },
         tipiDiGiorno: tipi.map((t) => ({ chiave: t.chiave, nomi: t.nomi, date: t.date, turniGuida: t.turniGuida, turniMacchina: t.turniMacchina })),
+        dateDellUnita,
       };
       if (!data) { res.json(base); return; }
       if (!file.calendario.has(data)) { res.status(400).json({ error: "Il file non ha turni per questa data" }); return; }
@@ -348,7 +354,9 @@ async function preparaValidita(file: FileTurni, psId: string) {
   const abbinamento = abbinaPerValidita(corseFile, progetto.corse);
   const tipi = await giorniTipoDelProgetto(psId, giorniDa(periodo.dal, periodo.al));
   const validita = validitaDalFile(file, abbinamento.corsePerTrip, (d) => tipi.get(d) ?? null, periodo);
-  return { periodo, corseFile, progetto, abbinamento, validita };
+  /* le unità di progettazione: una per tipo di giorno del file (tappa 7.40) */
+  const unita = unitaDalFile(file, abbinamento.corsePerTrip);
+  return { periodo, corseFile, progetto, abbinamento, validita, unita, tipi };
 }
 
 function resocontoValidita(file: FileTurni, v: NonNullable<Awaited<ReturnType<typeof preparaValidita>>>) {
@@ -364,6 +372,7 @@ function resocontoValidita(file: FileTurni, v: NonNullable<Awaited<ReturnType<ty
     corseDaAggiornare: v.validita.length,
     corseDelProgettoFuoriDalFile: Math.max(0, v.progetto.corse.length - v.validita.length),
     dateSpente: v.validita.reduce((s, c) => s + c.spente.length, 0),
+    unita: v.unita.length,
     /* prima le incerte (da guardare), poi le non trovate */
     elencoNonTrovate: [
       ...v.abbinamento.incerte.map((c) => ({ c, incerta: true })),
@@ -377,6 +386,26 @@ function resocontoValidita(file: FileTurni, v: NonNullable<Awaited<ReturnType<ty
 }
 
 const lista = (v: string[]) => `{${v.join(",")}}`;
+
+/** Le unità di progettazione già salvate nel progetto: quante in tutto, e quante il file aggiornerebbe. */
+async function unitaGiaNelProgetto(psId: string, ids: string[]): Promise<{ unitaNelProgetto: number; unitaDaAggiornare: number }> {
+  const r = await db.execute<{ tutte: number; dal_file: number }>(sql`
+    SELECT count(*)::int AS tutte,
+           count(*) FILTER (WHERE validity_id = ANY(${lista(ids)}::text[]))::int AS dal_file
+      FROM ps_validity_units WHERE project_id = ${psId}::uuid`);
+  return { unitaNelProgetto: Number(r.rows[0]?.tutte ?? 0), unitaDaAggiornare: Number(r.rows[0]?.dal_file ?? 0) };
+}
+
+/** La voce più frequente (a pari merito la prima vista); null se non ce n'è. */
+function piuFrequente(v: (string | null | undefined)[]): string | null {
+  const conta = new Map<string, number>();
+  for (const x of v) if (x) conta.set(x, (conta.get(x) ?? 0) + 1);
+  let meglio: string | null = null, n = 0;
+  for (const [x, c] of conta) if (c > n) { meglio = x; n = c; }
+  return meglio;
+}
+
+const dataBreve = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const BLOCCO = 20_000;
 
 router.post("/planning-studio/projects/:id/validita-da-file/anteprima", limiteImport, soloDallApp, conFile, async (req, res) => {
@@ -387,7 +416,7 @@ router.post("/planning-studio/projects/:id/validita-da-file/anteprima", limiteIm
     if (!file) return;
     const v = await preparaValidita(file, p.id);
     if (!v) { res.status(422).json({ error: "Il file non ha un periodo né date nel calendario" }); return; }
-    res.json(resocontoValidita(file, v));
+    res.json({ ...resocontoValidita(file, v), ...(await unitaGiaNelProgetto(p.id, v.unita.map((u) => u.validityId))) });
   } catch (e: any) {
     req.log.error({ err: e?.message }, "anteprima validità dal file");
     res.status(500).json({ error: "Errore nella lettura del file dei turni" });
@@ -408,6 +437,15 @@ router.post("/planning-studio/projects/:id/validita-da-file", limiteImport, solo
     const coppieTipo = v.validita.flatMap((c) => c.giorniTipo.map((t) => [c.tripId, t] as const));
     const coppieSpente = v.validita.flatMap((c) => c.spente.map((d) => [c.tripId, d] as const));
     const resoconto = resocontoValidita(file, v);
+    /* le unità di progettazione si creano con le validità, se non si chiede di no */
+    const conUnita = String(req.body?.unita ?? "si") !== "no";
+    const catR = conUnita ? await db.execute<{ date: string; category_id: string }>(sql`
+      SELECT DISTINCT ON (c.date) to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id
+        FROM ps_validity_category_calendar c
+       WHERE (c.project_id = ${p.id}::uuid OR c.project_id IS NULL)
+         AND c.date BETWEEN ${dal}::date AND ${al}::date
+       ORDER BY c.date, c.project_id ASC NULLS LAST`) : { rows: [] as { date: string; category_id: string }[] };
+    const categoriaDi = new Map(catR.rows.map((r) => [r.date, r.category_id]));
 
     /* tutto in una transazione, a insiemi, col lucchetto delle validità del progetto
      * (lo stesso del sync delle categorie, lib/planning-studio-validity.ts) */
@@ -444,10 +482,33 @@ router.post("/planning-studio/projects/:id/validita-da-file", limiteImport, solo
             FROM unnest(${lista(parte.map((c) => c[0]))}::uuid[], ${lista(parte.map((c) => c[1]))}::date[]) AS x(t, d)
           ON CONFLICT (trip_id, date) DO UPDATE SET exception_type = 2, reason = 'file-turni'`);
       }
+      if (conUnita && v.unita.length > 0) {
+        /* lo stesso lucchetto del salvataggio delle unità (lib/planning-studio-validity-units.ts) */
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(712340103, hashtext(${p.id}))`);
+        for (const u of v.unita) {
+          const descrizione = `Dal file dei turni: ${u.date.length} giorni dal ${dataBreve(u.date[0]!)} al ${dataBreve(u.date[u.date.length - 1]!)}. Insiemi di turni: ${u.insiemi.join("; ")}`.slice(0, 1000);
+          await tx.execute(sql`
+            INSERT INTO ps_validity_units (
+              project_id, validity_id, name, description, category_id, day_type_id,
+              trip_ids, trip_count, representative_dates, day_count
+            ) VALUES (
+              ${p.id}::uuid, ${u.validityId}, ${u.nome}, ${descrizione},
+              ${piuFrequente(u.date.map((d) => categoriaDi.get(d)))}::uuid, ${piuFrequente(u.date.map((d) => v.tipi.get(d)))}::uuid,
+              ${JSON.stringify(u.tripIds)}::jsonb, ${u.tripIds.length},
+              ${JSON.stringify(u.date)}::jsonb, ${u.date.length}
+            )
+            ON CONFLICT (project_id, validity_id) DO UPDATE SET
+              name = EXCLUDED.name, description = EXCLUDED.description,
+              category_id = EXCLUDED.category_id, day_type_id = EXCLUDED.day_type_id,
+              trip_ids = EXCLUDED.trip_ids, trip_count = EXCLUDED.trip_count,
+              representative_dates = EXCLUDED.representative_dates, day_count = EXCLUDED.day_count,
+              updated_at = now()`);
+        }
+      }
       await tx.execute(sql`
         INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, target_id, payload)
         VALUES (${p.id}::uuid, ${req.user!.id}::uuid, 'validity.file-turni', NULL, NULL,
-                ${JSON.stringify({ dal, al, corse: ids.length, dateSpente: coppieSpente.length, nonTrovate: resoconto.nonTrovate })}::jsonb)`);
+                ${JSON.stringify({ dal, al, corse: ids.length, dateSpente: coppieSpente.length, nonTrovate: resoconto.nonTrovate, unita: conUnita ? v.unita.length : 0 })}::jsonb)`);
     });
 
     /* la verifica: le date di circolazione rilette con la valutazione del feed, confrontate col file */
@@ -472,7 +533,12 @@ router.post("/planning-studio/projects/:id/validita-da-file", limiteImport, solo
       catch (e: any) { req.log.warn({ err: e?.message, progetto: r.id }, "validità dal file: sincronizzazione non avviata"); }
     }
 
-    res.json({ ...resoconto, verifica: { esatte, diverse: diverse.length, esempi: diverse.slice(0, 20) }, progettiFucinaSincronizzati: sincronizzati });
+    res.json({
+      ...resoconto,
+      verifica: { esatte, diverse: diverse.length, esempi: diverse.slice(0, 20) },
+      progettiFucinaSincronizzati: sincronizzati,
+      unitaSalvate: conUnita ? v.unita.length : 0,
+    });
   } catch (e: any) {
     req.log.error({ err: e?.message }, "validità dal file");
     res.status(500).json({ error: "Errore nella scrittura delle validità" });
