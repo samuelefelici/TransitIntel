@@ -9,9 +9,10 @@
  * Argos li ritrova da sé.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, FileText, Image as ImageIcon, Loader2, Paperclip, Sheet, X } from "lucide-react";
+import { AlertTriangle, BookOpen, FileText, Image as ImageIcon, Loader2, Paperclip, Sheet, X } from "lucide-react";
 import {
-  caricaAllegato, estensioneDi, FORMATI_ARGOS, MAX_ALLEGATI_TURNO, MAX_ALLEGATO_MB, peso, perchéNonAllegabile, togliAllegato,
+  caricaAllegato, estensioneDi, FORMATI_ARGOS, imparaAllegato, imparaDiPartenza, MAX_ALLEGATI_TURNO, MAX_ALLEGATO_MB, peso,
+  perchéNonAllegabile, togliAllegato,
 } from "@/lib/argos-console";
 
 export interface AllegatoInCorso {
@@ -22,10 +23,13 @@ export interface AllegatoInCorso {
   avanzamento: number;
   id?: string;
   errore?: string;
+  /** 📚 all'invio entra nella Biblioteca di Argos (acceso di partenza per i documenti) */
+  biblioteca: boolean;
 }
 
-/** Ciò che resta accanto al messaggio inviato (e nella storia). */
-export interface AllegatoMessaggio { nome: string; formato: string; byte: number }
+/** Ciò che resta accanto al messaggio inviato (e nella storia). `biblioteca`: true se è entrato
+ *  nella Biblioteca, una stringa (il perché) se doveva entrarci e non è entrato. */
+export interface AllegatoMessaggio { nome: string; formato: string; byte: number; biblioteca?: boolean | string }
 
 const IMMAGINI = new Set([".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"]);
 const TABELLE = new Set([".xlsx", ".xlsm", ".ods", ".csv", ".tsv"]);
@@ -52,7 +56,7 @@ export function useAllegati(conversazione: string | null) {
       const perché = perchéNonAllegabile(f.name, f.size)
         ?? (attivi >= MAX_ALLEGATI_TURNO ? `al più ${MAX_ALLEGATI_TURNO} file per messaggio` : null);
       aggiorna(l => [...l, { chiave, nome: f.name, byte: f.size, stato: perché ? "errore" : "carico", avanzamento: 0,
-                              ...(perché ? { errore: perché } : {}) }]);
+                              biblioteca: imparaDiPartenza(f.name), ...(perché ? { errore: perché } : {}) }]);
       if (perché) continue;
       caricaAllegato(conversazione, f, fr => cambia(chiave, { avanzamento: fr }))
         .then(a => {
@@ -70,20 +74,31 @@ export function useAllegati(conversazione: string | null) {
     if (voce?.id && conversazione) void togliAllegato(conversazione, voce.id).catch(() => {});
   }, [conversazione, aggiorna]);
 
-  /** Al messaggio: gli id dei pronti e i dati da mostrare; la lista si svuota. */
-  const consegna = useCallback((): { ids: string[]; meta: AllegatoMessaggio[] } => {
+  const cambiaBiblioteca = useCallback((chiave: string) => {
+    aggiorna(l => l.map(x => (x.chiave === chiave ? { ...x, biblioteca: !x.biblioteca } : x)));
+  }, [aggiorna]);
+
+  /** Al messaggio: quelli con 📚 entrano prima nella Biblioteca (così Argos lo sa nel turno), poi
+   *  gli id dei pronti e i dati da mostrare, con l'esito; la lista si svuota. */
+  const consegna = useCallback(async (): Promise<{ ids: string[]; meta: AllegatoMessaggio[] }> => {
     const pronti = ref.current.filter(x => x.stato === "pronto" && x.id);
     aggiorna(() => []);
+    const esiti = await Promise.all(pronti.map(async x => {
+      if (!x.biblioteca || !conversazione) return undefined;
+      try { await imparaAllegato(conversazione, x.id!); return true; } catch (e) { return e instanceof Error ? e.message : String(e); }
+    }));
     return {
       ids: pronti.map(x => x.id!),
-      meta: pronti.map(x => ({ nome: x.nome, formato: estensioneDi(x.nome).slice(1), byte: x.byte })),
+      meta: pronti.map((x, i) => ({ nome: x.nome, formato: estensioneDi(x.nome).slice(1), byte: x.byte,
+                                    ...(esiti[i] !== undefined ? { biblioteca: esiti[i] } : {}) })),
     };
-  }, [aggiorna]);
+  }, [aggiorna, conversazione]);
 
   return {
     lista,
     aggiungi,
     togli,
+    cambiaBiblioteca,
     consegna,
     pronti: lista.filter(x => x.stato === "pronto").length,
     inCaricamento: lista.some(x => x.stato === "carico"),
@@ -98,7 +113,9 @@ function Icona({ nome }: { nome: string }) {
 }
 
 /** Le pillole sopra la casella di scrittura. */
-export function PilloleAllegati({ lista, onTogli }: { lista: AllegatoInCorso[]; onTogli: (chiave: string) => void }) {
+export function PilloleAllegati({ lista, onTogli, onBiblioteca }: {
+  lista: AllegatoInCorso[]; onTogli: (chiave: string) => void; onBiblioteca: (chiave: string) => void;
+}) {
   if (!lista.length) return null;
   return (
     <div className="mb-1.5 flex flex-wrap gap-1.5" aria-label="File allegati al prossimo messaggio">
@@ -115,6 +132,16 @@ export function PilloleAllegati({ lista, onTogli }: { lista: AllegatoInCorso[]; 
             {a.stato === "carico" ? `${Math.round(a.avanzamento * 100)}%` : a.stato === "errore" ? "" : peso(a.byte)}
           </span>
           {a.stato === "errore" && <span className="max-w-[18rem] truncate">{a.errore}</span>}
+          {a.stato !== "errore" && (
+            <button type="button" onClick={() => onBiblioteca(a.chiave)} aria-pressed={a.biblioteca}
+              aria-label={a.biblioteca ? `${a.nome}: entra nella Biblioteca di Argos (clicca per usarlo solo qui)` : `${a.nome}: solo in questa conversazione (clicca per metterlo nella Biblioteca)`}
+              title={a.biblioteca ? "📚 All'invio entra nella Biblioteca di Argos, che ci impara. Clicca per usarlo solo in questa conversazione."
+                : "Solo in questa conversazione. Clicca per metterlo nella Biblioteca di Argos."}
+              className={`inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[9.5px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
+                a.biblioteca ? "bg-emerald-500/20 text-emerald-200" : "text-zinc-500 hover:bg-white/10 hover:text-zinc-300"}`}>
+              <BookOpen className="h-3 w-3" aria-hidden />{a.biblioteca ? "Biblioteca" : "solo qui"}
+            </button>
+          )}
           <button type="button" onClick={() => onTogli(a.chiave)} aria-label={`Togli ${a.nome}`}
             className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
             <X className="h-3 w-3" />
@@ -148,10 +175,13 @@ export function AllegatiMessaggio({ allegati }: { allegati: AllegatoMessaggio[] 
   return (
     <div className="mb-1 flex flex-wrap justify-end gap-1">
       {allegati.map((a, i) => (
-        <span key={`${a.nome}-${i}`} title={`${a.nome} · ${peso(a.byte)}`}
+        <span key={`${a.nome}-${i}`}
+          title={`${a.nome} · ${peso(a.byte)}${a.biblioteca === true ? " · nella Biblioteca di Argos" : typeof a.biblioteca === "string" ? ` · non nella Biblioteca: ${a.biblioteca}` : ""}`}
           className="inline-flex max-w-full items-center gap-1 rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-200">
           <Icona nome={a.nome} />
           <span className="max-w-[12rem] truncate">{a.nome}</span>
+          {a.biblioteca === true && <BookOpen className="h-3 w-3 shrink-0 text-emerald-300" aria-label="nella Biblioteca" />}
+          {typeof a.biblioteca === "string" && <AlertTriangle className="h-3 w-3 shrink-0 text-amber-300" aria-label={`non nella Biblioteca: ${a.biblioteca}`} />}
         </span>
       ))}
     </div>

@@ -944,7 +944,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             ...(meta.domanda && m.ruolo === "assistant" ? { ask: { ...meta.domanda, answered: [] } } : {}),
             ...(meta.piano_run_id ? { pianoRunId: Number(meta.piano_run_id) } : {}),
             ...(m.ruolo === "user" && Array.isArray(meta.allegati) && meta.allegati.length
-              ? { allegati: meta.allegati.map((a: any) => ({ nome: String(a?.nome ?? "file"), formato: String(a?.formato ?? ""), byte: Number(a?.byte) || 0 })) }
+              ? { allegati: meta.allegati.map((a: any) => ({ nome: String(a?.nome ?? "file"), formato: String(a?.formato ?? ""), byte: Number(a?.byte) || 0,
+                                                             ...(a?.biblioteca === true ? { biblioteca: true } : {}) })) }
               : {}),
           } as Msg;
         });
@@ -1059,15 +1060,19 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
                       allegatiOverride?: { ids: string[]; meta: AllegatoMessaggio[] }) => {
     if (loading || blocked || allegati.inCaricamento) return;
     const scritto = (textOverride ?? input).trim();
-    // gli allegati pronti partono con questo messaggio (il Riprova rimanda i suoi)
-    const conFile = allegatiOverride ?? (conversazione && textOverride === undefined ? allegati.consegna() : { ids: [], meta: [] });
-    const text = scritto || (conFile.ids.length ? "Leggi gli allegati e dimmi che cosa contengono." : "");
-    if (!text) return;
+    const prendeFile = !allegatiOverride && !!conversazione && textOverride === undefined;
+    if (!scritto && !allegatiOverride?.ids.length && !(prendeFile && allegati.pronti)) return;
     const t: ArgosTab = effectiveTab;
     const m: AgentMode = modeOverride ?? agentMode;
+    // occupato da subito: mentre i 📚 entrano nella Biblioteca un secondo invio non parte
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
     setLoading(true);
+    // gli allegati pronti partono con questo messaggio (il Riprova rimanda i suoi); quelli con 📚
+    // entrano prima nella Biblioteca, così Argos lo sa già in questo turno
+    const conFile = allegatiOverride ?? (prendeFile ? await allegati.consegna() : { ids: [], meta: [] });
+    const text = scritto || (conFile.ids.length ? "Leggi gli allegati e dimmi che cosa contengono." : "");
+    if (!text) { setLoading(false); return; }
     setLiveTurn(null); // regia in diretta: i contatori ripartono col turno
     stickRef.current = true;
     const turnStartMs = Date.now();
@@ -1815,7 +1820,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             <span className="ml-auto text-zinc-500">le schermate aperte si aggiornano da sole</span>
           </div>
         )}
-        {conAllegati && <PilloleAllegati lista={allegati.lista} onTogli={allegati.togli} />}
+        {conAllegati && <PilloleAllegati lista={allegati.lista} onTogli={allegati.togli} onBiblioteca={allegati.cambiaBiblioteca} />}
         <form onSubmit={e => { e.preventDefault(); send(); }} className="flex items-end gap-2"
           onDragOver={conAllegati ? e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); } : undefined}
           onDrop={conAllegati ? e => { if (e.dataTransfer.files.length) { e.preventDefault(); allegati.aggiungi(e.dataTransfer.files); } } : undefined}>
@@ -1865,7 +1870,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
           {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: corse, validità e anche linee nuove · </span>}
-          ⏎ invia · ⇧⏎ nuova riga{conAllegati ? " · 📎 trascina o incolla i file (niente dati di persone)" : ""} · l'AI può sbagliare, verifica i dati critici
+          ⏎ invia · ⇧⏎ nuova riga{conAllegati ? " · 📎 trascina o incolla i file (niente dati di persone) · 📚 = entra nella Biblioteca di Argos" : ""} · l'AI può sbagliare, verifica i dati critici
         </p>
       </div>
     </>

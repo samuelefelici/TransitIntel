@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
-  DIRETTA_VUOTA, FORMATI_ARGOS, MAX_ALLEGATO_MB, applica, autonomiaEffettiva, durata, estensioneDi, peso, perchéNonAllegabile,
+  DIRETTA_VUOTA, FORMATI_ARGOS, MAX_ALLEGATO_MB, applica, autonomiaEffettiva, durata, estensioneDi, imparaAllegato, imparaDiPartenza, peso,
+  perchéNonAllegabile,
   quandoFa, riepilogo, sintesiEvento, spezzaSSE, token,
   type EventoTraccia, type EventoStream,
 } from "./argos-console";
@@ -121,6 +122,38 @@ describe("gli allegati della chat", () => {
     expect(perchéNonAllegabile("grande.pdf", MAX_ALLEGATO_MB * 1024 * 1024 + 1)).toContain("MB");
     expect(FORMATI_ARGOS).toContain(".xlsx");
     expect(new Set(FORMATI_ARGOS).size).toBe(FORMATI_ARGOS.length);
+  });
+
+  it("📚 di partenza i documenti da tenere entrano nella Biblioteca; dati del giorno e immagini no", () => {
+    for (const n of ["Accordo.PDF", "regolamento.docx", "slide.pptx", "norma.odt", "appunti.md", "guida.html", "libro.epub"]) {
+      expect(imparaDiPartenza(n), n).toBe(true);
+    }
+    for (const n of ["turni.xlsx", "km.ods", "fermate.csv", "dati.json", "palina.jpg", "schermata.png", "senza"]) {
+      expect(imparaDiPartenza(n), n).toBe(false);
+    }
+  });
+
+  describe("📚 mettere un allegato nella Biblioteca", () => {
+    afterEach(() => { vi.unstubAllGlobals(); });
+
+    it("chiama la rotta giusta, con i cookie, e restituisce titolo e categoria", async () => {
+      const f = vi.fn(async () => new Response(JSON.stringify({ titolo: "Accordo", categoria: "Caricati in chat" }), { status: 200 }));
+      vi.stubGlobal("fetch", f);
+      await expect(imparaAllegato("c/1", "a 2")).resolves.toEqual({ titolo: "Accordo", categoria: "Caricati in chat" });
+      const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toMatch(/\/conversazioni\/c%2F1\/allegati\/a%202\/impara$/);
+      expect(init.method).toBe("POST");
+      expect(init.credentials).toBe("include");
+    });
+
+    it("il perché del rifiuto arriva a chi ha caricato; senza scrittura un messaggio chiaro", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "contiene dati di persone" }), { status: 400 })));
+      await expect(imparaAllegato("c", "a")).rejects.toThrow("dati di persone");
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 })));
+      await expect(imparaAllegato("c", "a")).rejects.toThrow("permesso di scrittura");
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("non json", { status: 502 })));
+      await expect(imparaAllegato("c", "a")).rejects.toThrow("HTTP 502");
+    });
   });
 
   it("il peso, all'italiana", () => {

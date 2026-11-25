@@ -2250,6 +2250,26 @@ Fatto finora:
     lettura, col token dell'utente; le risposte perdono i campi delle persone.
     Registro di Argos: 100 capacità, 21 skill.
 
+- **📚 Chi carica un documento in chat lo insegna ad Argos (25/11).** Ogni
+  allegato ha l'interruttore «Biblioteca»: acceso di partenza per i documenti
+  da tenere (PDF, Word, PowerPoint, ODF, Markdown, testo, HTML, EPUB), spento
+  per fogli, CSV, JSON e immagini (si accende a mano). All'invio i documenti
+  con 📚 entrano nella Biblioteca, categoria «Caricati in chat», *prima* che
+  parta il messaggio: Argos lo sa già nel turno e lo dice; poi concetti e
+  cervello si aggiornano da soli (autoalimentazione). Accanto al messaggio
+  resta 📚 se è entrato, ⚠ col perché se no.
+  - *Regole*: serve il permesso di scrittura sull'area (chi legge soltanto
+    riceve un messaggio chiaro); niente dati di persone; almeno 200 caratteri
+    di testo; al più 20 documenti al giorno per utente (`IMPARA_UTENTE_MAX_AL_GIORNO`);
+    il nome di chi ha caricato non entra nel documento (resta solo
+    nell'allegato, per il tetto).
+  - *Dove*: argos `api/allegati.py` (`impara_da_utente`), `api/console.py`
+    (`POST /console/conversazioni/{id}/allegati/{aid}/impara`), `schema.sql`
+    (`allegati.imparato_da`, `imparato_il`); Cerbero `routes/argos-console.ts`
+    (rotta con controllo d'accesso alla conversazione), SPA
+    `components/argos/AllegatiChat.tsx`, `ArgosConversation.tsx`,
+    `lib/argos-console.ts`.
+
 ## In sospeso
 
 - **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):
