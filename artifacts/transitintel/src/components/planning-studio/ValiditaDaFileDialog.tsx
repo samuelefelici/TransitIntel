@@ -1,15 +1,14 @@
 /**
- * «Validità dal file dei turni» (tappe 7.39 e 7.40): nella pagina Validità di
+ * «Validità dal file dei turni» (tappa 7.39): nella pagina Validità di
  * Planning Studio. Si carica l'esportazione dei turni in vigore; per ogni
  * corsa del progetto che si ritrova nel file, la validità diventa quella del
- * file (periodo, giorni tipo, giorni in cui non gira), e ogni tipo di giorno
- * del file diventa un'unità di progettazione. Prima un'anteprima, poi
- * «Applica»; alla fine la verifica e il passo successivo (Progetti di esercizio).
+ * file (periodo, giorni tipo, giorni in cui non gira). Prima un'anteprima,
+ * poi «Applica»; alla fine la verifica e il passo successivo: le unità di
+ * progettazione le calcola Cerbero con la sua logica («Calcola Unità», 7.41).
  */
 import { useEffect, useState } from "react";
-import { Link } from "wouter";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardList, FileUp, Layers, Loader2, Rocket, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileUp, Loader2, Rocket, X } from "lucide-react";
 import {
   anteprimaValidita, applicaValidita, dataLeggibile, percentuale,
   type AnteprimaValidita, type EsitoValidita,
@@ -33,8 +32,6 @@ export default function ValiditaDaFileDialog({ projectId, canEdit, onClose, onAp
   const [applico, setApplico] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
   const [elenco, setElenco] = useState(false);
-  /* le unità di progettazione dal file (7.40): accese di partenza */
-  const [conUnita, setConUnita] = useState(true);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !applico) onClose(); };
@@ -55,7 +52,7 @@ export default function ValiditaDaFileDialog({ projectId, canEdit, onClose, onAp
     if (!file) return;
     setApplico(true); setErrore(null);
     try {
-      const r = await applicaValidita(projectId, file, conUnita);
+      const r = await applicaValidita(projectId, file);
       setEsito(r);
       onApplicato();
       toast.success("Validità aggiornate", { description: `${n(r.corseDaAggiornare)} corse con le date del file` });
@@ -156,19 +153,6 @@ export default function ValiditaDaFileDialog({ projectId, canEdit, onClose, onAp
                 {!esito && <li className="text-amber-300">Per le corse aggiornate la validità di prima si sostituisce, eccezioni messe a mano comprese; le loro categorie (Scuole aperte, chiuse…) non si ricalcolano più da sole.</li>}
               </ul>
 
-              {!esito && a.unita > 0 && (
-                <label htmlFor="validita-unita" className="flex items-start gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3 cursor-pointer">
-                  <input id="validita-unita" type="checkbox" checked={conUnita} onChange={(e) => setConUnita(e.target.checked)} className="mt-0.5 accent-indigo-500" />
-                  <span className="text-xs text-slate-200">
-                    Crea anche le <b>unità di progettazione</b>: una per tipo di giorno del file ({n(a.unita)}), con le sue date e le sue corse.
-                    <span className="block text-[11px] text-slate-400 mt-0.5">
-                      {(a.unitaDaAggiornare ?? 0) > 0 && `${n(a.unitaDaAggiornare!)} ci sono già da un caricamento precedente e si aggiornano. `}
-                      {(a.unitaNelProgetto ?? 0) - (a.unitaDaAggiornare ?? 0) > 0 && `Le altre ${n((a.unitaNelProgetto ?? 0) - (a.unitaDaAggiornare ?? 0))} unità del progetto restano come sono.`}
-                    </span>
-                  </span>
-                </label>
-              )}
-
               {a.elencoNonTrovate.length > 0 && (
                 <div>
                   <button onClick={() => setElenco((v) => !v)} className="text-[11px] text-emerald-300 hover:text-emerald-200">
@@ -199,40 +183,16 @@ export default function ValiditaDaFileDialog({ projectId, canEdit, onClose, onAp
 
               {esito && (
                 <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-2">
-                  {esito.unitaSalvate > 0 ? (
-                    <>
-                      <p className="text-xs text-slate-200 font-semibold">{n(esito.unitaSalvate)} unità di progettazione salvate, una per tipo di giorno del file</p>
-                      <ol className="text-[11px] text-slate-400 space-y-0.5 list-decimal pl-4">
-                        <li>Fucina › Progetti di esercizio › questo programma: avvia il progetto di un'unità.</li>
-                        <li>Nel progetto di Fucina › Scenari vetture › «Importa turni esistenti», con lo stesso tipo di giorno.</li>
-                      </ol>
-                      <div className="flex flex-wrap gap-2">
-                        <Link href={`/fucina/esercizio/${projectId}`}>
-                          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold hover:from-indigo-500 hover:to-violet-500">
-                            <ClipboardList className="h-3.5 w-3.5" /> Progetti di esercizio <ArrowRight className="h-3.5 w-3.5" />
-                          </button>
-                        </Link>
-                        <Link href={`/planning-studio/${projectId}/validity-units`}>
-                          <button className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-slate-700 text-slate-300 hover:text-indigo-300 hover:border-indigo-500/40">
-                            <Layers className="h-3.5 w-3.5" /> Unità salvate
-                          </button>
-                        </Link>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-xs text-slate-200 font-semibold">Il passo successivo, per i turni</p>
-                      <ol className="text-[11px] text-slate-400 space-y-0.5 list-decimal pl-4">
-                        <li>«Calcola Unità»: raggruppa i giorni con le stesse corse.</li>
-                        <li>Fucina › Progetti di esercizio › questo programma: avvia il progetto di un'unità.</li>
-                        <li>Nel progetto di Fucina › Scenari vetture › «Importa turni esistenti», con un giorno dell'unità.</li>
-                      </ol>
-                      <button onClick={onCalcolaUnita}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold hover:from-indigo-500 hover:to-violet-500">
-                        <Rocket className="h-3.5 w-3.5" /> Calcola Unità ora
-                      </button>
-                    </>
-                  )}
+                  <p className="text-xs text-slate-200 font-semibold">Il passo successivo, per i turni</p>
+                  <ol className="text-[11px] text-slate-400 space-y-0.5 list-decimal pl-4">
+                    <li>«Calcola Unità»: Cerbero raggruppa i giorni con le stesse corse, con la sua logica.</li>
+                    <li>Fucina › Progetti di esercizio › questo programma: avvia il progetto di un'unità.</li>
+                    <li>Nel progetto di Fucina › Scenari vetture › «Importa turni esistenti», con un giorno dell'unità.</li>
+                  </ol>
+                  <button onClick={onCalcolaUnita}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold hover:from-indigo-500 hover:to-violet-500">
+                    <Rocket className="h-3.5 w-3.5" /> Calcola Unità ora
+                  </button>
                 </div>
               )}
             </section>
@@ -249,7 +209,7 @@ export default function ValiditaDaFileDialog({ projectId, canEdit, onClose, onAp
             <button onClick={() => void applica()} disabled={!anteprima || applico || leggo || !canEdit || anteprima.corseDaAggiornare === 0}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold text-black bg-emerald-400 hover:bg-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed">
               {applico ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-              {anteprima ? `Applica a ${n(anteprima.corseDaAggiornare)} corse${conUnita && anteprima.unita > 0 ? ` e ${n(anteprima.unita)} unità` : ""}` : "Applica"}
+              {anteprima ? `Applica a ${n(anteprima.corseDaAggiornare)} corse` : "Applica"}
             </button>
           )}
         </div>
