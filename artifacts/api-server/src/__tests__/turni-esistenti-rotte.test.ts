@@ -18,6 +18,7 @@ vi.mock("../lib/scheduling-projects", () => ({
 }));
 
 import router from "../lib/turni-esistenti/rotte";
+import { db } from "@workspace/db";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const P = "a0000000-0000-4000-8000-0000000000a1";
@@ -96,5 +97,14 @@ describe("import dei turni esistenti: rotte", () => {
     for (let i = 0; i < 31; i++) stati.push((await request(app).post(URL).set("X-Cerbero-Import", "1")).status);
     expect(stati.slice(0, 30).every((x) => x === 400)).toBe(true);
     expect(stati[30]).toBe(429);
+  });
+
+  it("validità dal file: progetto di Planning Studio che non si vede, in sola lettura, senza intestazione", async () => {
+    const url = `/api/planning-studio/projects/${P}/validita-da-file/anteprima`;
+    expect((await manda(FILE, false, url)).status).toBe(400);
+    expect((await manda(FILE, true, url)).status).toBe(404);
+    vi.mocked(db.execute).mockResolvedValueOnce({ rows: [{ id: P, name: "Prova", my_role: "viewer" }] } as any);
+    const r = await manda(FILE, true, `/api/planning-studio/projects/${P}/validita-da-file`);
+    expect(r.status).toBe(403);
   });
 });

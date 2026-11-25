@@ -14,7 +14,8 @@ vi.mock("@workspace/db", () => ({
 import {
   FileTurniNonValido, dataIso, giorniDelFile, leggiFileTurni, testoDelFile, tipiDiGiorno, turniDelGiorno,
 } from "../lib/turni-esistenti/file";
-import { abbinaCorse, corseDelFile, numeroDellaCorsa, type CorsaGtfs } from "../lib/turni-esistenti/abbina";
+import { abbinaCorse, corseDelFile, numeroDellaCorsa, type CorsaDelFile, type CorsaGtfs } from "../lib/turni-esistenti/abbina";
+import { abbinaPerValidita, dateDelleCorse, giorniDa, periodoDelFile, validitaDalFile } from "../lib/turni-esistenti/validita";
 import { costruisciTurni, kmStimati, residenzaAiTurniGuida, tipoDelMezzo, tipoDelTurno } from "../lib/turni-esistenti/costruisci";
 import type { TripBlock } from "../lib/ottimizza-veicoli/modello";
 
@@ -229,5 +230,53 @@ describe("tipi di mezzo e di turno", () => {
     expect(tipoDelTurno("PartTime", 1, 0)).toBe("intero");
     expect(tipoDelTurno("Altri", 2, 240)).toBe("spezzato");
     expect(tipoDelTurno(null, 2, 60)).toBe("semiunico");
+  });
+});
+
+describe("validità delle corse dal file (7.39)", () => {
+  const f = leggiFileTurni(FILE);
+  /* giorno tipo di prova: domenica festivo, sabato sabato, il resto feriale */
+  const tipo = (d: string) => ({ 0: "FES", 6: "SAB" } as Record<number, string>)[new Date(`${d}T00:00:00Z`).getUTCDay()] ?? "FER";
+
+  it("le date di ogni corsa vengono dal calendario degli insiemi di turni", () => {
+    const d = dateDelleCorse(f);
+    expect([...d.get("700001")!].sort()).toEqual(["2026-12-01", "2026-12-02"]);
+    expect(d.size).toBe(5);
+    expect(periodoDelFile(f)).toEqual({ dal: "2026-12-01", al: "2026-12-31" });
+    expect(giorniDa("2026-12-30", "2027-01-02")).toEqual(["2026-12-30", "2026-12-31", "2027-01-01", "2027-01-02"]);
+  });
+
+  it("abbinamento sul progetto: numero, poi orario solo se la corsa del progetto è una sola", () => {
+    const c = (corsa: string, linea: string, p: number, a: number): CorsaDelFile => ({ corsa, linea, partenza: p, arrivo: a, da: "A", a: "B", turnoMacchina: null, turnoGuida: "T" });
+    const progetto: CorsaGtfs[] = [
+      { tripId: "p1", codice: "X_100", linea: "L1", partenza: 360, arrivo: 390 },
+      { tripId: "p2", codice: "X_555", linea: "L1", partenza: 420, arrivo: 450 },
+      { tripId: "p3", codice: "X_556", linea: "L2", partenza: 480, arrivo: 500 },
+      { tripId: "p4", codice: "X_557", linea: "L2", partenza: 480, arrivo: 501 },
+    ];
+    const a = abbinaPerValidita([
+      c("100", "L1", 360, 390),   // numero
+      c("200", "L1", 420, 450),   // orario, una sola corsa del progetto: p2
+      c("201", "L1", 420, 450),   // stessa corsa in un altro tipo di giorno: anche lei a p2
+      c("300", "L2", 480, 500),   // due corse del progetto alle 8:00 → incerta
+      c("400", "L9", 600, 620),   // non c'è
+    ], progetto);
+    expect(Object.fromEntries(a.corsePerTrip)).toEqual({ p1: ["100"], p2: ["200", "201"] });
+    expect([a.perNumero, a.perOrario, a.incerte.map((x) => x.corsa), a.nonTrovate.map((x) => x.corsa)]).toEqual([1, 2, ["300"], ["400"]]);
+  });
+
+  it("validità: giorni tipo delle date e date spente nel periodo", () => {
+    const v = validitaDalFile(f, new Map([["p1", ["700001", "700002"]]]), tipo, { dal: "2026-12-01", al: "2026-12-31" });
+    expect(v).toHaveLength(1);
+    expect(v[0]!.date).toEqual(["2026-12-01", "2026-12-02"]);
+    expect(v[0]!.giorniTipo).toEqual(["FER"]);
+    /* i feriali di dicembre 2026 sono 23: tolti l'1 e il 2, 21 spenti; sabati e domeniche non c'entrano */
+    expect(v[0]!.spente).toHaveLength(21);
+    expect(v[0]!.spente).not.toContain("2026-12-05");
+    expect(v[0]!.spente[0]).toBe("2026-12-03");
+  });
+
+  it("una corsa senza date nel periodo non si tocca", () => {
+    expect(validitaDalFile(f, new Map([["p1", ["999999"]]]), tipo, { dal: "2026-12-01", al: "2026-12-31" })).toEqual([]);
   });
 });

@@ -36,9 +36,10 @@ import { Link, useParams, useLocation } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
+import ValiditaDaFileDialog from "@/components/planning-studio/ValiditaDaFileDialog";
 import {
   ArrowLeft, Calendar as CalendarIcon, Loader2, Undo2, Redo2,
-  Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket,
+  Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket, FileUp,
   Sparkles, Save, Tags, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import {
@@ -508,6 +509,8 @@ export default function PlanningStudioValidityPage() {
 
   /* ─── Auto-import dialogs ─── */
   const [autoImportOpen, setAutoImportOpen] = useState(false);
+  /* ─── Validità dal file dei turni dell'azienda (tappa 7.39) ─── */
+  const [daFileOpen, setDaFileOpen] = useState(false);
   /* ─── Calcola Unità (validity_id-based) ─── */
   const [computeUnitsOpen, setComputeUnitsOpen] = useState(false);
   /* ─── Categorie validità: editor globale + dialog "Categorie Periodi" (calendario dipinto) ─── */
@@ -882,6 +885,14 @@ export default function PlanningStudioValidityPage() {
           <Wand2 className="h-3.5 w-3.5" />
           Sincronizza GTFS
         </button>
+        <button
+          onClick={() => setDaFileOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-500/50 transition-colors"
+          title="Scrivi la validità delle corse dalle date del file dei turni in vigore (esportazione BDROP): periodo, giorni tipo e giorni in cui non girano. Mostra prima un'anteprima."
+        >
+          <FileUp className="h-3.5 w-3.5" />
+          Dal file dei turni
+        </button>
 
         <div className="ml-auto flex items-center gap-1.5">
           <Link href={`/planning-studio/${projectId}/validity-units`}>
@@ -1169,6 +1180,15 @@ export default function PlanningStudioValidityPage() {
             invalidateMatrix();
             setAutoImportOpen(false);
           }}
+        />
+      )}
+      {daFileOpen && (
+        <ValiditaDaFileDialog
+          projectId={projectId}
+          canEdit={projectQ.data?.myRole !== "viewer"}
+          onClose={() => setDaFileOpen(false)}
+          onApplicato={invalidateMatrix}
+          onCalcolaUnita={() => { setDaFileOpen(false); setComputeUnitsOpen(true); }}
         />
       )}
       {computeUnitsOpen && (

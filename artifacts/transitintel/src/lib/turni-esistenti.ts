@@ -117,3 +117,42 @@ export function giudizio(r: Resoconto): "bene" | "attenzione" | "grave" {
   const p = percentuale(riconosciute(r), r.corseNelFile);
   return p >= 95 ? "bene" : p >= 70 ? "attenzione" : "grave";
 }
+
+/* ─── Le validità delle corse di Planning Studio dal file (tappa 7.39) ─── */
+
+export interface CorsaDaGuardare extends CorsaNonTrovata {
+  /** più corse del progetto con lo stesso orario: non si è scelto */
+  incerta: boolean;
+}
+
+export interface AnteprimaValidita {
+  periodo: { dal: string; al: string };
+  corseNelFile: number;
+  riconosciutePerNumero: number;
+  riconosciutePerOrario: number;
+  nonTrovate: number;
+  incerte: number;
+  corseDelProgetto: number;
+  corseSpenteNelProgetto: number;
+  corseDaAggiornare: number;
+  corseDelProgettoFuoriDalFile: number;
+  dateSpente: number;
+  elencoNonTrovate: CorsaDaGuardare[];
+}
+
+export interface EsitoValidita extends AnteprimaValidita {
+  verifica: { esatte: number; diverse: number; esempi: { tripId: string; inPiu: number; inMeno: number }[] };
+  progettiFucinaSincronizzati: number;
+}
+
+export function anteprimaValidita(psProjectId: string, file: File): Promise<AnteprimaValidita> {
+  return apiFetch<AnteprimaValidita>(`/api/planning-studio/projects/${psProjectId}/validita-da-file/anteprima`, {
+    method: "POST", body: modulo(file, {}), headers: INTESTAZIONI,
+  });
+}
+
+export function applicaValidita(psProjectId: string, file: File): Promise<EsitoValidita> {
+  return apiFetch<EsitoValidita>(`/api/planning-studio/projects/${psProjectId}/validita-da-file`, {
+    method: "POST", body: modulo(file, {}), headers: INTESTAZIONI,
+  });
+}

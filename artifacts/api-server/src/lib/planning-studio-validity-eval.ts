@@ -176,6 +176,33 @@ async function buildDayTypeMap(
   return map;
 }
 
+/** Patroni locali del progetto (formato ISO da agency_settings.patronSaintDates). */
+async function patroniDelProgetto(projectId: string): Promise<Set<string>> {
+  const projR = await db.execute(sql`
+    SELECT agency_settings FROM ps_projects WHERE id = ${projectId}::uuid LIMIT 1
+  `);
+  const settings = ((projR as any).rows?.[0]?.agency_settings as any) || {};
+  const patronSaints = new Set<string>();
+  if (Array.isArray(settings.patronSaintDates)) {
+    for (const d of settings.patronSaintDates) {
+      if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) patronSaints.add(d);
+    }
+  }
+  return patronSaints;
+}
+
+/**
+ * Il giorno tipo di ogni data per il progetto, con la stessa regola della
+ * valutazione qui sotto (override del progetto, poi globale, poi patroni,
+ * domenica, sabato, feriale). Lo usa l'import delle validità dal file dei
+ * turni (lib/turni-esistenti), che deve scrivere validità che questa
+ * valutazione legga uguali.
+ */
+export async function giorniTipoDelProgetto(projectId: string, dates: string[]): Promise<Map<string, string | null>> {
+  if (dates.length === 0) return new Map();
+  return buildDayTypeMap(projectId, dates, await patroniDelProgetto(projectId));
+}
+
 /**
  * Per ogni corsa (attiva in ≥1 data del range), l'insieme ORDINATO di date
  * 'YYYYMMDD' in cui circola davvero secondo la matrice di validità.
@@ -192,17 +219,7 @@ export async function computeActiveDatesByTrip(
   const result = new Map<string, string[]>();
   if (dates.length === 0) return result;
 
-  // Patroni locali (formato ISO da agency_settings.patronSaintDates)
-  const projR = await db.execute(sql`
-    SELECT agency_settings FROM ps_projects WHERE id = ${projectId}::uuid LIMIT 1
-  `);
-  const settings = ((projR as any).rows?.[0]?.agency_settings as any) || {};
-  const patronSaints = new Set<string>();
-  if (Array.isArray(settings.patronSaintDates)) {
-    for (const d of settings.patronSaintDates) {
-      if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) patronSaints.add(d);
-    }
-  }
+  const patronSaints = await patroniDelProgetto(projectId);
 
   // Calendario categorie: merged PROJECT > GLOBAL (5B) — la riga del progetto
   // vince, quella globale legacy è il fallback per le date scoperte.

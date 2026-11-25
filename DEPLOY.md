@@ -2360,6 +2360,47 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Planning Studio: le validità delle corse dal file dei turni (tappa 7.39)
+
+- **Nuovo pulsante «Dal file dei turni»** in Planning Studio › progetto ›
+  Validità. Lo stesso file della 7.38 (esportazione BDROP) dice in quali
+  giorni gira ogni corsa: il calendario dà gli insiemi di turni di ogni data,
+  gli insiemi i turni, i turni le corse.
+- Per ogni corsa del progetto che si ritrova nel file la validità diventa
+  quella del file:
+  - il periodo della corsa è quello del file;
+  - valgono i giorni tipo delle sue date, con la stessa regola della
+    valutazione della validità (festivi, patroni, override del calendario);
+  - le date dei suoi giorni tipo in cui non gira diventano eccezioni
+    «spenta» (motivo `file-turni`);
+  - la validità di prima si sostituisce, eccezioni a mano comprese; le
+    categorie della corsa si tolgono e non si ricalcolano più da sole
+    (`categoriesManual`), perché le date sono già quelle giuste.
+- **Aggancio delle corse** su tutto il progetto: col numero della corsa;
+  con linea e orario solo se nel progetto c'è una corsa sola a quell'ora
+  (allora prende le date di tutte le corse del file con quell'orario). Con
+  più corse candidate la corsa del file è «incerta» e resta fuori: una
+  corsa feriale non prende le date di una festiva con lo stesso orario. Le
+  corse del progetto che il file non ha restano come sono.
+- **Prima un'anteprima, poi «Applica»**: tutto in una transazione, col
+  lucchetto delle validità del progetto. Dopo la scrittura una verifica
+  rilegge le date di circolazione con la valutazione del feed e le confronta
+  col file, corsa per corsa; i progetti di Fucina di quel programma rifanno
+  il loro feed. Il passo successivo per i turni: «Calcola Unità», poi da
+  Progetti di esercizio il progetto di Fucina di un'unità, lì «Importa turni
+  esistenti» (7.38).
+- Il file non si conserva. Serve la scrittura sulla Rete e un ruolo da
+  proprietario o editor nel progetto; una versione pubblicata non si
+  modifica.
+
+**Dopo il deploy**: deploy di API e web. Nessuna migrazione, nessuna
+variabile, nessuna Watch Path.
+
+**Rollback**: immagini precedenti di API e web. Le validità scritte restano:
+si rifanno con «Sincronizza GTFS» (le corse aggiornate hanno
+`categoriesManual`: si tolgono dalla colonna Categorie se le si vuole di
+nuovo calcolate) o a mano nella matrice.
+
 ### Fucina: importa i turni esistenti dal file dell'azienda (tappa 7.38)
 
 - **Nuovo pulsante «Importa turni esistenti»** in Fucina › progetto › Scenari
