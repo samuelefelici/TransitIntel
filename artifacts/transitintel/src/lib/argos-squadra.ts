@@ -3,7 +3,7 @@
  * turno (argos/api/regia.py). Gli avvisi arrivano in diretta, uno per volta;
  * qui si fondono per incarico e si leggono, con prudenza, dalla storia.
  */
-export type StatoMembro = "al_lavoro" | "fatto" | "errore" | "tempo_scaduto";
+export type StatoMembro = "in_attesa" | "al_lavoro" | "fatto" | "errore" | "tempo_scaduto";
 
 export interface MembroSquadra {
   /** unico nel turno (delega.incarico): lo stesso agente può avere due compiti */
@@ -16,9 +16,11 @@ export interface MembroSquadra {
   ultimo?: string | null;
   ms?: number | null;
   errore?: string | null;
+  /** gli id dei lavori che aspetta (il lavoro in catena: ne riceve i rapporti) */
+  dopo?: string[];
 }
 
-const STATI: readonly StatoMembro[] = ["al_lavoro", "fatto", "errore", "tempo_scaduto"];
+const STATI: readonly StatoMembro[] = ["in_attesa", "al_lavoro", "fatto", "errore", "tempo_scaduto"];
 const MAX_MEMBRI = 12;
 
 /** Un avviso dal server (o una riga della storia), controllato campo per campo; altro → null. */
@@ -38,7 +40,13 @@ export function membroDa(v: unknown): MembroSquadra | null {
     ultimo: typeof o.ultimo === "string" ? o.ultimo.slice(0, 80) : null,
     ms: numero(o.ms),
     errore: typeof o.errore === "string" ? o.errore.slice(0, 300) : null,
+    dopo: Array.isArray(o.dopo) ? o.dopo.filter((d): d is string => typeof d === "string").slice(0, 6).map(d => d.slice(0, 24)) : [],
   };
+}
+
+/** Chi aspetta: i nomi dei colleghi (dalla squadra dello stesso messaggio), altrimenti gli id. */
+export function nomiAttesi(m: MembroSquadra, squadra: MembroSquadra[]): string[] {
+  return (m.dopo ?? []).map(d => squadra.find(x => x.id === d)?.nome ?? d);
 }
 
 /** L'avviso nuovo prende il posto di quello dello stesso incarico, o si aggiunge in coda. */

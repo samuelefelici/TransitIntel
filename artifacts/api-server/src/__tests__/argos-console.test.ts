@@ -340,6 +340,17 @@ describe("le conversazioni", () => {
     expect(r.text).toContain('"done":true');
     expect(stato.chiamate[1]!.url).toBe(`http://argos.prova/console/conversazioni/${CONV}/messaggi`);
     expect(corpo(1)).toMatchObject({ autore: io, testo: "Rinforza la linea 1", modalita: "accetta", ti_auth_token: "jwt-prova" });
+    expect(corpo(1).calcoli).toBe(false);
+  });
+
+  it("«Calcoli»: ad Argos solo se l'utente li accende, e solo sì o no", async () => {
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Riduci i turni del lunedì", calcoli: "sì" })).status).toBe(400);
+    rispondi(200, { conversazione: { id: CONV, modo: "agente", agente: "regista", progetto: MIO }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Riduci i turni del lunedì", calcoli: true });
+    expect(corpo(1).calcoli).toBe(true);
   });
 
   it("la traccia per l'animazione: ad Argos solo se chiesta, e solo sì o no", async () => {
