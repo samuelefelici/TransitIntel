@@ -36,6 +36,7 @@ import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import { getApiBase, apiFetch } from "@/lib/api";
+import { waypointsLeggibili } from "@/lib/waypoints-leggibili";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 import {
   getPsProject, type PsProject,
@@ -1410,7 +1411,7 @@ export default function PlanningStudioEditorPage() {
         routeId,
         routeColor: route?.color || "#10b981",
         stops: data.stops || [],
-        waypoints: normalizeWaypoints((data.shape?.waypoints || []) as PsWaypoint[], data.stops || []),
+        waypoints: normalizeWaypoints(waypointsLeggibili(data.shape?.waypoints), data.stops || []),
         shapeMode: ((data.shape?.mode as any) || "driving"),
         geometry: data.shape?.geometry || null,
         distanceM: data.shape?.distanceM ?? null,
@@ -2399,8 +2400,9 @@ export default function PlanningStudioEditorPage() {
     try {
       const geometry = { type: "LineString" as const, coordinates: shapeEdit.coordinates };
       // Riusa i waypoint esistenti se presenti, altrimenti derivali dalle fermate
-      const waypoints: PsWaypoint[] = routeView.shape?.waypoints?.length
-        ? routeView.shape.waypoints
+      const salvati = waypointsLeggibili(routeView.shape?.waypoints);
+      const waypoints: PsWaypoint[] = salvati.length
+        ? salvati
         : routeView.stops.map(s => ({
             lng: Number(s.lon), lat: Number(s.lat), stopId: s.stopId, mode: "snap" as const,
           }));
