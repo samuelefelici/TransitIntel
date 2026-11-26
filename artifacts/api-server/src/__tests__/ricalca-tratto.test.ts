@@ -5,7 +5,7 @@
  * all'isolato, la retta taglia le case; la 24 quel tratto lo fa già.
  */
 import { describe, it, expect } from "vitest";
-import { ricalcaTratto, ritaglia, semplifica, coordinateValide, type TracciatoCandidato } from "../lib/ricalca-tratto";
+import { ricalcaTratto, elencaRicalchi, ritaglia, semplifica, coordinateValide, type TracciatoCandidato } from "../lib/ricalca-tratto";
 import { metri, type PuntoLonLat } from "../lib/shape-segments";
 
 const CIMITERO: PuntoLonLat = [13.49275, 43.58701];
@@ -71,6 +71,47 @@ describe("ricalcaTratto", () => {
     const r = ritaglia(anello, CIMITERO, TOGLIATTI_108)!;
     expect(r).not.toBeNull();
     expect(r.metri).toBeLessThan(250);
+  });
+});
+
+describe("ricalco da una linea scelta", () => {
+  it("con la variante preferita copia da lì anche se un'altra è più corta", () => {
+    const r = ricalcaTratto([cand("v-24", "24", VIA_24), cand("v-giro", "22/24", GIRO)], CIMITERO, TOGLIATTI_108,
+      { preferita: "v-giro" });
+    expect(r?.variantId).toBe("v-giro");
+    expect(r!.metri).toBeGreaterThan(300);
+  });
+
+  it("se la variante scelta non fa il tratto non si ripiega su un'altra", () => {
+    const lontano: PuntoLonLat[] = VIA_24.map(([x, y]) => [x + 0.002, y]);
+    expect(ricalcaTratto([cand("v-24", "24", VIA_24), cand("v-x", "30", lontano)], CIMITERO, TOGLIATTI_108,
+      { preferita: "v-x" })).toBeNull();
+  });
+
+  it("senza preferenza resta la più corta", () => {
+    expect(ricalcaTratto([cand("v-giro", "22/24", GIRO), cand("v-24", "24", VIA_24)], CIMITERO, TOGLIATTI_108,
+      { preferita: null })?.variantId).toBe("v-24");
+  });
+});
+
+describe("elencaRicalchi", () => {
+  it("tutte le linee che fanno il tratto, dalla più corta, col codice del percorso", () => {
+    const lontano: PuntoLonLat[] = VIA_24.map(([x, y]) => [x + 0.002, y]);
+    const l = elencaRicalchi([
+      { ...cand("v-giro", "22/24", GIRO), codice: null },
+      { ...cand("v-24", "24", VIA_24), codice: "24AD" },
+      cand("v-x", "30", lontano),
+    ], CIMITERO, TOGLIATTI_108);
+    expect(l.map(r => r.variantId)).toEqual(["v-24", "v-giro"]);
+    expect(l[0].codice).toBe("24AD");
+    expect(l[0].metri).toBeLessThan(l[1].metri);
+    expect(l[0].punti[0]).toEqual(CIMITERO);
+  });
+
+  it("rispetta il massimo e senza candidati è vuoto", () => {
+    expect(elencaRicalchi([cand("v-24", "24", VIA_24), cand("v-giro", "22/24", GIRO)], CIMITERO, TOGLIATTI_108, 1))
+      .toHaveLength(1);
+    expect(elencaRicalchi([], CIMITERO, TOGLIATTI_108)).toEqual([]);
   });
 });
 

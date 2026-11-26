@@ -437,6 +437,29 @@ export async function setPsVariantShape(
 
 /* ─── Snap routing OSRM (proxy server-side) ─── */
 
+/** Una linea del progetto che fa già un tratto da→a: da qui si può copiare la
+ *  strada vera (anche dove le auto non passano) invece dello snap stradale. */
+export interface PsRicalco {
+  variantId: string;
+  linea: string;
+  percorso: string;
+  codice: string | null;
+  metri: number;
+  punti: [number, number][];
+  intermedi: [number, number][];
+}
+
+/** Le linee che fanno il tratto da→a nello stesso verso, dalla più corta. */
+export async function listPsRicalchi(
+  projectId: string, da: [number, number], a: [number, number], escludiVariante?: string,
+): Promise<PsRicalco[]> {
+  const r = await apiFetch<{ ricalchi: PsRicalco[] }>("/api/planning-studio/route-snap/ricalchi", {
+    method: "POST",
+    body: JSON.stringify({ projectId, da, a, ...(escludiVariante ? { escludiVariante } : {}) }),
+  });
+  return r.ricalchi ?? [];
+}
+
 export async function routeSnap(
   points: [number, number][],
   mode: "driving" | "manual" = "driving",

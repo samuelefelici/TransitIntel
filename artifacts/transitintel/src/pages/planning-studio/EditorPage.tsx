@@ -45,7 +45,7 @@ import {
   listPsVariants, createPsVariant, getPsVariant, deletePsVariant, updatePsVariant, duplicatePsVariant,
   setPsVariantStops, setPsVariantShape, type PsVariant, type PsVariantStop,
   type PsWaypoint, type PsShape,
-  routeSnap,
+  routeSnap, listPsRicalchi, type PsRicalco,
   listPsNoGoZones, createPsNoGoZone, deletePsNoGoZone, type PsNoGoZone,
   listPsCalendars, type PsCalendar,
   importPsGtfs, previewPsGtfs, type PsImportCounts, type PsGtfsPreviewRoute, type PsMergeImportCounts,
@@ -289,6 +289,17 @@ function stopLegRange(wpts: PsWaypoint[], legIdx: number): [number, number] {
 function stripLegMode(w: PsWaypoint): PsWaypoint {
   const { legMode: _drop, ...rest } = w;
   return rest;
+}
+
+/** I waypoint [testa, coda] del TRATTO k (dalla fermata k alla k+1 della
+ * sequenza), via liberi compresi in mezzo; null se il tratto non c'è più
+ * (sequenza cambiata). Si calcola ogni volta dai waypoint correnti: la
+ * selezione resta giusta anche dopo modifiche che spostano gli indici. */
+function rangeDelTratto(wpts: PsWaypoint[], stopsList: PsVariantStop[], k: number | null): [number, number] | null {
+  if (k == null || k < 0 || k >= stopsList.length - 1) return null;
+  const lo = waypointIndexForStopPos(wpts, stopsList, k);
+  const hi = waypointIndexForStopPos(wpts, stopsList, k + 1);
+  return lo >= 0 && hi > lo ? [lo, hi] : null;
 }
 
 function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], wIdx: number): number {
@@ -556,6 +567,13 @@ export default function PlanningStudioEditorPage() {
   // Strumento «Tratto manuale»: clic su un tratto del percorso per dichiararlo
   // a mano libera (tratteggiato, niente snap) o riportarlo automatico.
   const [legTool, setLegTool] = useState(false);
+  // Tratto selezionato col clic sulla linea (indice della fermata di partenza
+  // nella sequenza). I punti intermedi si vedono solo per questo tratto: su un
+  // percorso ricalcato sono centinaia e in piazza coprivano tutto.
+  const [trattoSel, setTrattoSel] = useState<number | null>(null);
+  const [mostraPunti, setMostraPunti] = useState(false);
+  const [ricalchiTratto, setRicalchiTratto] =
+    useState<{ tratto: number; elenco: PsRicalco[] | null; errore?: string } | null>(null);
   const suppressClickRef = useRef(false);
   const [lineHover, setLineHover] = useState(false);
   const [snapBusy, setSnapBusy] = useState(false);
@@ -1400,6 +1418,8 @@ export default function PlanningStudioEditorPage() {
 
   async function startEditingVariant(routeId: string, variantId: string) {
     try {
+      setTrattoSel(null);
+      setRicalchiTratto(null);
       // Chiudi l'eventuale vista percorso per non sovrapporre i pannelli
       setRouteView(null);
       setShapeEdit(null);
@@ -2273,6 +2293,69 @@ export default function PlanningStudioEditorPage() {
     void applyLocalEdit(cur.stops, wpts, oldIndexOf);
   }
 
+  /** Clic secco sulla linea: seleziona il TRATTO fermata→fermata che contiene
+   * il waypoint-leg cliccato e apre il suo pannello. Non tocca niente. */
+  function selezionaTratto(legIdx: number) {
+    const cur = editorRef.current;
+    if (!cur || legIdx < 0 || legIdx >= cur.waypoints.length - 1) return;
+    const [lo] = stopLegRange(cur.waypoints, legIdx);
+    const k = stopPosForWaypointIdx(cur.waypoints, cur.stops, lo);
+    if (k < 0 || k >= cur.stops.length - 1) return;
+    setTrattoSel(k);
+    setRicalchiTratto(null);
+  }
+
+  /** Rifà SOLO il tratto k, lasciando com'è il resto del percorso:
+   * - "strada": snap su strada del solo tratto, via interni tolti;
+   * - "diretto": a mano libera, retta fra le due fermate (da modellare
+   *   trascinando la linea);
+   * - "ricalco": la strada di un'altra linea che lo fa già, coi suoi punti
+   *   come via a mano libera (l'editor non la ri-snappa). */
+  function rifaiTratto(k: number, modo: "strada" | "diretto" | "ricalco", ricalco?: PsRicalco) {
+    const cur = editorRef.current;
+    if (!cur) return;
+    const r = rangeDelTratto(cur.waypoints, cur.stops, k);
+    if (!r) return;
+    const [lo, hi] = r;
+    const testa0 = cur.waypoints[lo];
+    const testa: PsWaypoint = modo === "strada"
+      ? { ...stripLegMode(testa0), mode: "snap" as const }
+      : { ...testa0, legMode: "manual" as const };
+    const vie: PsWaypoint[] = modo === "ricalco" && ricalco
+      ? ricalco.intermedi.map(p => ({ lng: p[0], lat: p[1], mode: "snap" as const, legMode: "manual" as const }))
+      : [];
+    const wpts = [...cur.waypoints.slice(0, lo), testa, ...vie, ...cur.waypoints.slice(hi)];
+    const oldIndexOf = [
+      ...cur.waypoints.slice(0, lo).map((_, i) => i), lo, ...vie.map(() => -1),
+      ...cur.waypoints.slice(hi).map((_, i) => hi + i),
+    ];
+    const sporchi = new Set<number>();
+    for (let i = lo; i <= lo + vie.length; i++) sporchi.add(i);
+    void applyLocalEdit(cur.stops, wpts, oldIndexOf, sporchi);
+    setRicalchiTratto(null);
+    toast.info(modo === "strada" ? "Tratto su strada: ricalcolato solo questo tratto"
+      : modo === "diretto" ? "Tratto diretto: trascina la linea per farla passare dalla strada giusta"
+      : `Tratto ricalcato dalla linea ${ricalco?.linea}${ricalco?.codice ? ` (${ricalco.codice})` : ""}`, {
+      description: "Il resto del percorso non è stato toccato (Ctrl+Z per annullare).",
+    });
+  }
+
+  /** Le linee che fanno già il tratto k (stesso verso), per ricalcarlo. */
+  async function caricaRicalchi(k: number) {
+    const cur = editorRef.current;
+    if (!cur) return;
+    const a = cur.stops[k], b = cur.stops[k + 1];
+    if (!a || !b) return;
+    setRicalchiTratto({ tratto: k, elenco: null });
+    try {
+      const elenco = await listPsRicalchi(projectId,
+        [Number(a.lon), Number(a.lat)], [Number(b.lon), Number(b.lat)], cur.variantId);
+      setRicalchiTratto({ tratto: k, elenco });
+    } catch (e: any) {
+      setRicalchiTratto({ tratto: k, elenco: [], errore: e?.message || "ricerca non riuscita" });
+    }
+  }
+
   /** Strumento «Tratto manuale»: alterna il modo del TRATTO fermata→fermata
    * che contiene il waypoint-leg cliccato. In entrambe le direzioni il tratto
    * riparte PULITO tra i suoi due estremi (i via liberi interni cadono):
@@ -2511,6 +2594,26 @@ export default function PlanningStudioEditorPage() {
       }));
     return features.length > 0 ? { type: "FeatureCollection" as const, features } : null;
   }, [editor?.geometry, editor?.waypoints]);
+
+  // Tratto selezionato: i suoi waypoint (ricalcolati a ogni modifica) e la
+  // fetta di tracciato da evidenziare sulla mappa.
+  const rangeSel = editor ? rangeDelTratto(editor.waypoints, editor.stops, trattoSel) : null;
+  const selLo = rangeSel?.[0] ?? -1, selHi = rangeSel?.[1] ?? -1;
+  const trattoSelGeoJSON = useMemo(() => {
+    if (!editor?.geometry || selLo < 0 || selHi <= selLo) return null;
+    const coords = editor.geometry.coordinates as [number, number][];
+    if (coords.length < 2) return null;
+    const proj = projectWaypointsOnCoords(coords, editor.waypoints);
+    const slice = coords.slice(proj[selLo], proj[selHi] + 1);
+    if (slice.length < 2) return null;
+    return { type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: slice } };
+  }, [editor?.geometry, editor?.waypoints, selLo, selHi]);
+  // km del tratto selezionato (somma delle tratte fra i suoi waypoint)
+  const kmTrattoSel = rangeSel && editor?.legDistances && editor.legDistances.length === editor.waypoints.length - 1
+    ? editor.legDistances.slice(rangeSel[0], rangeSel[1]).reduce((t, d) => t + d, 0) / 1000 : null;
+  useEffect(() => {
+    if (!editor) { setTrattoSel(null); setRicalchiTratto(null); }
+  }, [!!editor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ─── Import GTFS ─── */
   const isEmpty = !loading && stops.length === 0 && routes.length === 0;
@@ -2879,6 +2982,73 @@ export default function PlanningStudioEditorPage() {
               className="ml-1 p-1 rounded hover:bg-black/10"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
+        {/* Pannello del tratto selezionato (clic sulla linea): rifarlo su strada,
+            diretto o ricalcato da un'altra linea, senza toccare il resto. */}
+        {editor && rangeSel && trattoSel != null && editor.stops[trattoSel + 1] && (() => {
+          const k = trattoSel;
+          const a = editor.stops[k], b = editor.stops[k + 1];
+          const manuale = editor.waypoints[rangeSel[0]]?.legMode === "manual";
+          const punti = rangeSel[1] - rangeSel[0] - 1;
+          const elenco = ricalchiTratto?.tratto === k ? ricalchiTratto : null;
+          return (
+            <div role="dialog" aria-label={`Tratto ${k + 1}: ${a.stopName} → ${b.stopName}`}
+              className="absolute top-14 left-1/2 -translate-x-1/2 z-20 w-[24rem] max-w-[calc(100%-2rem)] rounded-lg bg-slate-900/95 border border-slate-700 shadow-xl p-3 text-xs text-slate-200">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-semibold text-slate-100">Tratto {k + 1} → {k + 2}</div>
+                  <div className="text-slate-300 truncate" title={`${a.stopName} → ${b.stopName}`}>{a.stopName} → {b.stopName}</div>
+                  <div className="text-slate-400 mt-0.5">
+                    {kmTrattoSel != null ? `${kmTrattoSel.toFixed(2).replace(".", ",")} km · ` : ""}
+                    {manuale ? "a mano libera" : "su strada"}
+                    {punti > 0 ? ` · ${punti} punt${punti === 1 ? "o" : "i"} intermed${punti === 1 ? "io" : "i"}` : ""}
+                  </div>
+                </div>
+                <button onClick={() => { setTrattoSel(null); setRicalchiTratto(null); }} aria-label="Chiudi il pannello del tratto"
+                  className="p-1 rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100"><X className="w-3.5 h-3.5" /></button>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <button onClick={() => rifaiTratto(k, "strada")} disabled={snapBusy}
+                  title="Ricalcola solo questo tratto seguendo le strade (snap)"
+                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50">Su strada</button>
+                <button onClick={() => rifaiTratto(k, "diretto")} disabled={snapBusy}
+                  title="A mano libera: retta fra le due fermate, poi trascina la linea lungo la strada"
+                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50">Diretto</button>
+                <button onClick={() => void caricaRicalchi(k)} disabled={snapBusy}
+                  title="Copia la strada da una linea che fa già questo tratto (anche dove le auto non passano)"
+                  className="px-2 py-1 rounded bg-cyan-600/80 hover:bg-cyan-600 text-white disabled:opacity-50">Ricalca da una linea…</button>
+                <button onClick={() => setMostraPunti(v => !v)} aria-pressed={mostraPunti}
+                  title="Mostra i punti intermedi di tutto il percorso, non solo di questo tratto"
+                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700">{mostraPunti ? "Nascondi" : "Mostra"} tutti i punti</button>
+              </div>
+              {elenco && (
+                <div className="mt-2 border-t border-slate-700 pt-2">
+                  {elenco.elenco === null ? (
+                    <div className="text-slate-400 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Cerco le linee che fanno questo tratto…</div>
+                  ) : elenco.errore ? (
+                    <div className="text-red-300">Ricerca non riuscita: {elenco.errore}</div>
+                  ) : elenco.elenco.length === 0 ? (
+                    <div className="text-slate-400">Nessuna linea fa questo tratto nello stesso verso. Usa «Diretto» e trascina la linea lungo la strada.</div>
+                  ) : (
+                    <ul className="space-y-1">
+                      {elenco.elenco.map(r => (
+                        <li key={r.variantId}>
+                          <button onClick={() => rifaiTratto(k, "ricalco", r)} disabled={snapBusy}
+                            className="w-full text-left px-2 py-1 rounded bg-slate-800/70 hover:bg-slate-700 disabled:opacity-50">
+                            <span className="font-medium text-slate-100">Linea {r.linea}</span>
+                            {r.codice ? <span className="text-slate-400"> · {r.codice}</span> : null}
+                            <span className="text-slate-400"> — {r.percorso}</span>
+                            <span className="float-right text-slate-300">{(r.metri / 1000).toFixed(2).replace(".", ",")} km</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <div className="text-[10px] text-slate-500 mt-2">Trascina la linea del tratto per aggiungere un punto di passaggio · Ctrl+Z annulla</div>
+            </div>
+          );
+        })()}
         <Map
           ref={mapRef}
           mapboxAccessToken={MAPBOX_TOKEN}
@@ -2951,6 +3121,13 @@ export default function PlanningStudioEditorPage() {
             const movedPx = Math.hypot(e.point.x - d.downPt[0], e.point.y - d.downPt[1]);
             if (legTool && movedPx < 5) {
               toggleLegManual(d.insertIdx - 1);
+              return;
+            }
+            // Clic secco (niente drag): seleziona il tratto e apre il suo
+            // pannello. Prima il clic inseriva un via dove capitava: in piazza,
+            // fra decine di linee, era un punto in più a ogni tentativo.
+            if (movedPx < 5) {
+              selezionaTratto(d.insertIdx - 1);
               return;
             }
             // Ricalcolo LOCALE: cambia solo il tratto tra i due waypoint che
@@ -3481,6 +3658,18 @@ export default function PlanningStudioEditorPage() {
             </Source>
           )}
 
+          {/* Tratto selezionato: contorno chiaro sotto-sopra la linea */}
+          {editor?.geometry && trattoSelGeoJSON && (
+            <Source id="editor-shape-sel" type="geojson" data={trattoSelGeoJSON}>
+              <Layer
+                id="editor-shape-sel-line"
+                type="line"
+                paint={{ "line-color": "#22d3ee", "line-width": 9, "line-opacity": 0.45 }}
+                layout={{ "line-join": "round", "line-cap": "round" }}
+              />
+            </Source>
+          )}
+
           {/* Via-point in trascinamento (drag della linea, stile Google Maps) */}
           {dragViaPos && (
             <Marker longitude={dragViaPos[0]} latitude={dragViaPos[1]} anchor="center">
@@ -3488,8 +3677,10 @@ export default function PlanningStudioEditorPage() {
             </Marker>
           )}
 
-          {/* Waypoint draggable */}
-          {editor?.waypoints.map((w, idx) => (
+          {/* Waypoint draggable: le fermate sempre; i via liberi solo nel tratto
+              selezionato (o tutti, se richiesto dal pannello del tratto) */}
+          {editor?.waypoints.map((w, idx) => (!w.stopId && !mostraPunti
+            && !(rangeSel && idx > rangeSel[0] && idx < rangeSel[1])) ? null : (
             <Marker key={`w-${idx}`} longitude={w.lng} latitude={w.lat}
               draggable
               onDragEnd={(e) => moveWaypoint(idx, [e.lngLat.lng, e.lngLat.lat])}
@@ -3500,7 +3691,7 @@ export default function PlanningStudioEditorPage() {
                 onContextMenu={(e) => { e.preventDefault(); removeWaypoint(idx); }}
                 title={`Waypoint ${idx + 1} · ${w.mode === "manual" ? "MANUALE (tratti adiacenti forzati in linea retta)" : "snap su strada"}\nClick: alterna snap/manuale (forza corsie riservate) · Click destro: rimuovi`}
               >
-                <div className={`w-4 h-4 rounded-full border-2 border-white shadow-lg ${
+                <div className={`${w.stopId ? "w-4 h-4 border-2" : "w-2.5 h-2.5 border"} rounded-full border-white shadow-lg ${
                   w.stopId ? "bg-emerald-500" : w.mode === "manual" ? "bg-amber-400" : "bg-indigo-500"
                 } cursor-grab active:cursor-grabbing`} />
               </div>

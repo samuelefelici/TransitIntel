@@ -31,7 +31,7 @@ import { creaVersione, cancellaVersioneDelFeed } from "./versioni-pubblicate";
 import { richiedeDiritto } from "./auth";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
 import { normalizzaWaypoints } from "./waypoints-tracciato";
-import { ricalcaTratto, coordinateValide, type TracciatoCandidato } from "./ricalca-tratto";
+import { ricalcaTratto, elencaRicalchi, coordinateValide, type TracciatoCandidato } from "./ricalca-tratto";
 import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /* ════════════════════════════════════════════════════════════
@@ -2097,6 +2097,54 @@ function lineCrossesPolygon(line: [number, number][], poly: [number, number][]):
   return false;
 }
 
+/** I tracciati salvati del progetto, come candidati al ricalco (solo coordinate
+ *  valide). 'escludi' = la variante che si sta ridisegnando. */
+async function tracciatiDelProgetto(projectId: string, escludi: string | null): Promise<TracciatoCandidato[]> {
+  const r = await db.execute(sql`
+    SELECT s.variant_id, s.geometry, v.name AS percorso, v.code AS codice, rt.short_name AS linea
+      FROM ps_shapes s
+      JOIN ps_route_variants v ON v.id = s.variant_id
+      JOIN ps_routes rt ON rt.id = v.route_id
+     WHERE s.project_id = ${projectId}::uuid
+       AND (${escludi}::uuid IS NULL OR s.variant_id <> ${escludi}::uuid)
+  `);
+  const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+  return rows.map(x => ({
+    variantId: String(x.variant_id), linea: String(x.linea ?? ""), percorso: String(x.percorso ?? ""),
+    codice: x.codice != null ? String(x.codice) : null,
+    coordinate: coordinateValide(x.geometry),
+  })).filter(c => c.coordinate.length >= 2);
+}
+
+const puntoValido = (p: any): [number, number] | null => {
+  const lng = Number(p?.[0]), lat = Number(p?.[1]);
+  return Number.isFinite(lng) && Number.isFinite(lat) && Math.abs(lng) <= 180 && Math.abs(lat) <= 90 ? [lng, lat] : null;
+};
+
+/** POST /planning-studio/route-snap/ricalchi
+ *  body: { projectId: uuid, da: [lng,lat], a: [lng,lat], escludiVariante?: uuid }
+ *  Le linee del progetto che fanno il tratto da→a (nello stesso verso), dalla
+ *  più corta, coi punti del ricalco: l'operatore (o Argos) sceglie da quale
+ *  copiare la strada. Solo sui progetti che l'utente può aprire. */
+router.post("/planning-studio/route-snap/ricalchi", async (req, res): Promise<void> => {
+  const b = req.body || {};
+  const projectId = typeof b.projectId === "string" && UUID_RE.test(b.projectId) ? b.projectId : null;
+  if (!projectId) { res.status(400).json({ error: "projectId obbligatorio" }); return; }
+  if (!(await loadProjectAccessible(projectId, req.user!.id))) {
+    res.status(404).json({ error: "Progetto non trovato o non accessibile" }); return;
+  }
+  const da = puntoValido(b.da), a = puntoValido(b.a);
+  if (!da || !a) { res.status(400).json({ error: "da e a: coppie [lng, lat] valide" }); return; }
+  const escludi = typeof b.escludiVariante === "string" && UUID_RE.test(b.escludiVariante) ? b.escludiVariante : null;
+  const ricalchi = elencaRicalchi(await tracciatiDelProgetto(projectId, escludi), da, a, 8);
+  res.json({
+    ricalchi: ricalchi.map(r => ({
+      variantId: r.variantId, linea: r.linea, percorso: r.percorso, codice: r.codice,
+      metri: Math.round(r.metri), punti: r.punti, intermedi: r.intermedi,
+    })),
+  });
+});
+
 /** POST /planning-studio/route-snap
  *  body: { mode?: 'driving'|'manual', points: [[lng,lat], ...],
  *          modes?: ('driving'|'manual'|'ricalca')[] — modo PER SEGMENTO: 'manual' =
@@ -2106,6 +2154,8 @@ function lineCrossesPolygon(line: [number, number][], poly: [number, number][]):
  *                                        consentiti ai bus), coi punti intermedi,
  *          escludiVariante?: uuid           — la variante che si sta ridisegnando
  *                                        (il suo tracciato vecchio non vale),
+ *          ricalcaDa?: (uuid|null)[]        — per i tratti 'ricalca': copia SOLO da
+ *                                        questa variante (scelta dell'operatore),
  *          curb?: boolean (default true)    — arrivo lato marciapiede alle fermate,
  *          curbMask?: boolean[]             — quali punti sono fermate (curb) vs via liberi,
  *          projectId?: uuid                 — abilita il check zone vietate }
@@ -2140,22 +2190,14 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
     res.status(400).json({ error: "ricalca: serve projectId (si ricalca sui tracciati del progetto)" }); return;
   }
   const escludi = typeof b.escludiVariante === "string" && UUID_RE.test(b.escludiVariante) ? b.escludiVariante : null;
+  // ricalcaDa[i] = la variante da cui copiare il tratto i (scelta dall'operatore)
+  const ricalcaDa: (string | null)[] = Array.from({ length: nSeg }, (_, i) => {
+    const v = Array.isArray(b.ricalcaDa) ? b.ricalcaDa[i] : null;
+    return typeof v === "string" && UUID_RE.test(v) ? v : null;
+  });
   let candidati: TracciatoCandidato[] | null = null;
   const caricaCandidati = async (): Promise<TracciatoCandidato[]> => {
-    if (candidati) return candidati;
-    const r = await db.execute(sql`
-      SELECT s.variant_id, s.geometry, v.name AS percorso, rt.short_name AS linea
-        FROM ps_shapes s
-        JOIN ps_route_variants v ON v.id = s.variant_id
-        JOIN ps_routes rt ON rt.id = v.route_id
-       WHERE s.project_id = ${projectId}::uuid
-         AND (${escludi}::uuid IS NULL OR s.variant_id <> ${escludi}::uuid)
-    `);
-    const rows: any[] = (r as any).rows ?? (r as any) ?? [];
-    candidati = rows.map(x => ({
-      variantId: String(x.variant_id), linea: String(x.linea ?? ""), percorso: String(x.percorso ?? ""),
-      coordinate: coordinateValide(x.geometry),
-    })).filter(c => c.coordinate.length >= 2);
+    if (!candidati) candidati = await tracciatiDelProgetto(projectId!, escludi);
     return candidati;
   };
   // Curb: default ON. curbMask dice quali punti sono FERMATE (arrivo lato
@@ -2166,7 +2208,7 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
       ? b.curbMask.map(Boolean) : null;
 
   const segments: { geometry: any; distanceM: number; durationS: number; mode: string;
-                    ricalco?: { linea: string; percorso: string; variantId: string; intermedi: [number, number][] } }[] =
+                    ricalco?: { linea: string; percorso: string; codice: string | null; variantId: string; intermedi: [number, number][] } }[] =
     new Array(nSeg);
   let totalDist = 0, totalDur = 0;
   const unified: [number, number][] = [];
@@ -2185,12 +2227,12 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
   let i = 0;
   while (i < nSeg) {
     if (segModes[i] === "ricalca") {
-      const r = ricalcaTratto(await caricaCandidati(), coords[i], coords[i + 1]);
+      const r = ricalcaTratto(await caricaCandidati(), coords[i], coords[i + 1], { preferita: ricalcaDa[i] });
       if (r) {
         segments[i] = {
           geometry: { type: "LineString", coordinates: r.punti }, distanceM: r.metri, durationS: r.metri / 8.33,
           mode: "ricalca",
-          ricalco: { linea: r.linea, percorso: r.percorso, variantId: r.variantId, intermedi: r.intermedi },
+          ricalco: { linea: r.linea, percorso: r.percorso, codice: r.codice, variantId: r.variantId, intermedi: r.intermedi },
         };
         pushCoords(r.punti);
       } else {
