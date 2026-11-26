@@ -30,6 +30,7 @@ import { copiaProgetto, cancellaProgetto } from "./progetto-copie";
 import { creaVersione, cancellaVersioneDelFeed } from "./versioni-pubblicate";
 import { richiedeDiritto } from "./auth";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
+import { normalizzaWaypoints } from "./waypoints-tracciato";
 import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /* ════════════════════════════════════════════════════════════
@@ -144,7 +145,7 @@ function rowToShape(r: any) {
     variantId: r.variant_id,
     mode: r.mode,
     geometry: r.geometry,
-    waypoints: r.waypoints ?? [],
+    waypoints: normalizzaWaypoints(r.waypoints),
     distanceM: r.distance_m != null ? Number(r.distance_m) : null,
     durationS: r.duration_s != null ? Number(r.duration_s) : null,
     updatedAt: r.updated_at,
@@ -1477,7 +1478,7 @@ router.put("/planning-studio/projects/:id/variants/:variantId/shape", async (req
     res.status(400).json({ error: "geometry: LineString GeoJSON richiesto" }); return;
   }
   const mode = typeof b.mode === "string" ? b.mode : "driving";
-  const wpts = Array.isArray(b.waypoints) ? b.waypoints : [];
+  const wpts = normalizzaWaypoints(b.waypoints);
   const r = await db.execute(sql`
     INSERT INTO ps_shapes (project_id, variant_id, mode, geometry, waypoints, distance_m, duration_s, updated_at)
     VALUES (${proj.id}::uuid, ${variantId}::uuid, ${mode},
