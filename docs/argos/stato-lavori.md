@@ -2295,6 +2295,33 @@ Fatto finora:
     conversazione); le formule con «€» riempivano la console di avvisi di
     KaTeX a ogni ridisegno.
 
+- **La squadra in simbiosi (26/11).** Gli agenti lavorano anche in catena:
+  chi viene dopo parte dal lavoro di chi viene prima. Argos dà a ogni lavoro
+  un nome e dice chi aspetta chi: i lavori indipendenti partono insieme, gli
+  altri appena i colleghi hanno finito, e ne ricevono i rapporti; i rapporti
+  restano sulla lavagna del turno per le deleghe successive. Il ciclo dei
+  turni: il Turnista fa il giro integrato (turni macchina e guida con la
+  sonda) → dopo di lui l'Analista valuta gli spostamenti proposti sulle corse
+  del progetto (coincidenze, giro delle radiali, cadenze, passeggeri) →
+  Argos mette nel piano i soli spostamenti sicuri («la corsa delle 7:40
+  della linea 12 a +10' toglie un turno») → il Pianificatore li applica dopo
+  il sì e un secondo giro li verifica. In chat la squadra mostra anche
+  «aspetta Turnista» e «dopo Turnista».
+  - *Calcoli*: nuovo interruttore accanto alla graffetta (conversazioni con
+    Argos su un progetto). Acceso, in quei turni il Turnista può lanciare un
+    giro dell'ottimizzatore (salva uno scenario nuovo, l'orario non si
+    tocca; Cerbero chiede comunque la scrittura sui turni); spento, la
+    squadra lavora sui giri già fatti. Solo il giro: nessun'altra scrittura
+    passa di qui. Il giro si aspetta lato server (`attendi`), senza sprecare
+    giri di strumenti.
+  - *Limiti*: 6 lavori per chiamata, 4 insieme, 4 chiamate per turno; 7
+    minuti per la squadra, 18 con i Calcoli accesi.
+  - *Dove*: argos `api/regia.py` (catena, lavagna), `api/esecuzione.py`
+    (`CALCOLI_PERMESSI`, `Contesto.calcoli`), `api/transitintel.py`
+    (`ti_vcsp_status` con `attendi`), skill `lavoro-in-catena`; Cerbero
+    `routes/argos-console.ts` (`calcoli` sì o no), SPA `SquadraAlLavoro.tsx`
+    (`BottoneCalcoli`), `lib/argos-squadra.ts`, `ArgosConversation.tsx`.
+
 ## In sospeso
 
 - **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):

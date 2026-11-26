@@ -32,7 +32,7 @@ import {
 } from "lucide-react";
 import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
 import { AllegatiMessaggio, BottoneAllega, PilloleAllegati, useAllegati, type AllegatoMessaggio } from "@/components/argos/AllegatiChat";
-import { SquadraAlLavoro } from "@/components/argos/SquadraAlLavoro";
+import { BottoneCalcoli, SquadraAlLavoro } from "@/components/argos/SquadraAlLavoro";
 import { membroDa, squadraDa, unisciSquadra, type MembroSquadra } from "@/lib/argos-squadra";
 import { getApiBase } from "@/lib/api";
 import { annunciaScrittura } from "@/lib/argos-live";
@@ -885,6 +885,10 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   // gli allegati: solo in una conversazione salvata, dove Argos li conserva
   const allegati = useAllegati(conversazione && !solaLettura ? conversazione.id : null);
   const conAllegati = !!conversazione && !solaLettura;
+  // «Calcoli»: col regista su un progetto, l'utente permette alla squadra i giri dell'ottimizzatore
+  const conCalcoli = !!conversazione && conversazione.agente === "regista" && !!conversazione.progetto && !solaLettura;
+  const [calcoli, setCalcoli] = React.useState(false);
+  React.useEffect(() => { setCalcoli(false); }, [conversazione?.id]);
   const thread = effectiveTab; // thread di storico: 'chat' | 'agente'
 
   // Obiettivi persistenti: il lavoro che l'agente ha in carico sul progetto.
@@ -1112,7 +1116,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       : t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
     const body = conversazione
       ? { testo: text, modalita: m === "auto" ? "agente" : m, ...(osservatore ? { traccia: true } : {}),
-          ...(conFile.ids.length ? { allegati: conFile.ids } : {}) }
+          ...(conFile.ids.length ? { allegati: conFile.ids } : {}), ...(conCalcoli && calcoli ? { calcoli: true } : {}) }
       : t === "chat"
         ? { messages: history.slice(-20), projectId, deep }
         : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
@@ -1838,6 +1842,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           onDragOver={conAllegati ? e => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); } : undefined}
           onDrop={conAllegati ? e => { if (e.dataTransfer.files.length) { e.preventDefault(); allegati.aggiungi(e.dataTransfer.files); } } : undefined}>
           {conAllegati && <BottoneAllega onFile={f => allegati.aggiungi(f)} disabled={loading || blocked} />}
+          {conCalcoli && <BottoneCalcoli acceso={calcoli} onCambia={setCalcoli} disabled={loading || blocked} />}
           <textarea
             ref={inputRef}
             value={input}
@@ -1880,6 +1885,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         </form>
         <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
           {effectiveTab === "chat" && profondo && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
+          {conCalcoli && calcoli && <span className="text-emerald-300 font-semibold">⚙ calcoli accesi: la squadra può lanciare un giro dell'ottimizzatore (minuti, scenario nuovo, l'orario non si tocca) · </span>}
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
           {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: corse, validità e anche linee nuove · </span>}

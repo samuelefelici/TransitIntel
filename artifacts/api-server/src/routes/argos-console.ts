@@ -687,6 +687,11 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
   }
   if (b.traccia !== undefined && typeof b.traccia !== "boolean") { res.status(400).json({ error: "traccia: sì o no" }); return; }
   const traccia = b.traccia === true;
+  // «Calcoli»: l'utente permette, in QUESTO turno, che la squadra di Argos lanci i giri
+  // dell'ottimizzatore (salvano uno scenario nuovo, l'orario non si tocca). Il giro passa
+  // comunque da qui col token dell'utente: senza scrittura sui turni Cerbero lo rifiuta.
+  if (b.calcoli !== undefined && typeof b.calcoli !== "boolean") { res.status(400).json({ error: "calcoli: sì o no" }); return; }
+  const calcoli = b.calcoli === true;
   const allegati = allegatiDelTurno(b.allegati);
   if (allegati === null) { res.status(400).json({ error: `allegati: al più ${MAX_ALLEGATI_TURNO} allegati validi` }); return; }
   const d = await conversazioneVisibile(res, userId, req.params.id);
@@ -711,7 +716,7 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
     const upstream = await fetch(`${ARGOS_URL}/console/conversazioni/${req.params.id}/messaggi`, {
       method: "POST",
       headers: argosHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ autore: userId, testo, modalita, traccia, allegati, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
+      body: JSON.stringify({ autore: userId, testo, modalita, traccia, allegati, calcoli, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
       signal: ctrl.signal,
     });
     if (!upstream.ok || !upstream.body) {
