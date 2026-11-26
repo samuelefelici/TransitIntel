@@ -2358,9 +2358,11 @@ Fatto finora:
 
 ## In sospeso
 
-- **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):
-  niente documenti, esercizio, turni, parco, allegati. Agisce per conto del
-  proprietario del progetto: da decidere che cosa aprire a chi ha la chiave.
+- ~~**Argos: il connettore MCP** espone solo Planning Studio~~ — deciso il
+  26/11: apre anche Biblioteca, Cerbero a 360°, turni guida salvati, parco
+  dell'Officina e (col database collegato) territorio ed esercizio; il roster
+  resta fuori, anche a soli conteggi. Agisce coi diritti del proprietario del
+  progetto: la chiave di lettura resta al titolare.
 - **Argos: la simulazione delle tariffe** (`/api/fares/simulate*`, POST con
   un corpo da comporre) non è ancora uno strumento: oggi c'è il preventivo fra
   due fermate.
