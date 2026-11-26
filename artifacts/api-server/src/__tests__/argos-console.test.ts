@@ -109,6 +109,57 @@ describe("le letture", () => {
   });
 });
 
+describe("le proposte degli agenti (scheda «Proposte»)", () => {
+  const PROPOSTE = [
+    { id: 5, project_id: ALTRUI, status: "open" }, { id: 4, project_id: MIO, status: "accepted" },
+    { id: 3, project_id: MIO, status: "applied" }, { id: 2, project_id: "", status: "open" },
+    { id: 1, project_id: ALTRUI, status: "applied" },
+  ];
+
+  it("si vedono quelle dei propri progetti e quelle senza progetto; i conteggi sono delle visibili", async () => {
+    rispondi(200, { conteggi: { open: 2, accepted: 1, applied: 2, rejected: 0 }, proposte: PROPOSTE });
+    const r = await request(app()).get("/api/ai/argos/console/proposte?gruppo=aperte");
+    expect(r.status).toBe(200);
+    expect(r.body.proposte.map((p: any) => p.id)).toEqual([4, 2]);
+    expect(r.body.conteggi).toEqual({ open: 1, accepted: 1, applied: 1, rejected: 0 });
+    expect(stato.chiamate[0]!.url).toContain("/console/proposte?");
+    expect(stato.chiamate[0]!.url).toContain("gruppo=tutte");
+    expect(stato.chiamate[0]!.url).toContain("client_slug=tpl-personale");
+  });
+
+  it("un progetto: solo se l'utente lo apre; «senza»: quelle senza progetto", async () => {
+    expect((await request(app()).get(`/api/ai/argos/console/proposte?progetto=${ALTRUI}`)).status).toBe(404);
+    expect((await request(app()).get("/api/ai/argos/console/proposte?progetto=../x")).status).toBe(400);
+    expect((await request(app()).get("/api/ai/argos/console/proposte?gruppo=boh")).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+    rispondi(200, { proposte: PROPOSTE });
+    const r = await request(app()).get(`/api/ai/argos/console/proposte?progetto=${MIO}`);
+    expect(stato.chiamate[0]!.url).toContain(`progetto=${MIO}`);
+    expect(r.status).toBe(200);
+    rispondi(200, { proposte: PROPOSTE });
+    const s = await request(app()).get("/api/ai/argos/console/proposte?progetto=senza");
+    expect(s.body.proposte.map((p: any) => p.id)).toEqual([2]);
+    expect(stato.chiamate[1]!.url).not.toContain("progetto=");
+  });
+
+  it("cambiare stato: validato, e su un progetto altrui no", async () => {
+    expect((await request(app()).patch("/api/ai/argos/console/proposte/5").send({ stato: "cancellata" })).status).toBe(400);
+    expect((await request(app()).patch("/api/ai/argos/console/proposte/x").send({ stato: "open" })).status).toBe(400);
+    expect((await request(app()).patch("/api/ai/argos/console/proposte/5").send({ stato: "open", nota: 3 })).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+    rispondi(200, { proposta: { id: 5, project_id: ALTRUI } });
+    expect((await request(app()).patch("/api/ai/argos/console/proposte/5").send({ stato: "applied" })).status).toBe(404);
+    expect(stato.chiamate).toHaveLength(1);
+    rispondi(200, { proposta: { id: 4, project_id: MIO } });
+    rispondi(200, { ok: true, id: 4, stato: "rejected" });
+    const r = await request(app()).patch("/api/ai/argos/console/proposte/4").send({ stato: "rejected", nota: " rompe la coincidenza ", altro: "x" });
+    expect(r.status).toBe(200);
+    expect(stato.chiamate[2]!.init.method).toBe("PATCH");
+    expect(stato.chiamate[2]!.url).toContain("/console/proposte/4?");
+    expect(JSON.parse(stato.chiamate[2]!.init.body)).toEqual({ stato: "rejected", nota: "rompe la coincidenza" });
+  });
+});
+
 describe("le esecuzioni si vedono solo con il progetto", () => {
   it("l'elenco toglie quelle dei progetti che l'utente non apre", async () => {
     rispondi(200, { totale: 3, esecuzioni: [

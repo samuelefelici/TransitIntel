@@ -12,7 +12,7 @@
  * così un link porta dritto a una traccia.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, Bot, Gauge, MessagesSquare, Moon, Network, Play, Search, Sun, Wrench } from "lucide-react";
+import { BookOpen, Bot, Gauge, ListChecks, MessagesSquare, Moon, Network, Play, Search, Sun, Wrench } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Cruscotto from "@/components/argos-console/Cruscotto";
@@ -23,10 +23,14 @@ import Capacita from "@/components/argos-console/Capacita";
 import Biblioteca from "@/components/argos-console/Biblioteca";
 import Mappa from "@/components/argos-console/Mappa";
 import Conversazioni from "@/components/argos-console/Conversazioni";
+import Proposte from "@/components/argos-console/Proposte";
+import { pianoDaProposta } from "@/lib/argos-proposte";
+import type { PianoArgos } from "@/lib/argos-applica";
+import type { PropostaAgente } from "@/lib/argos-console";
 import { TemaArgosContesto } from "@/lib/argos-tema";
 import { useTema } from "@/hooks/use-tema";
 
-const SCHEDE = ["conversazione", "cruscotto", "biblioteca", "mappa", "squadra", "lavora", "ispettore", "capacita"] as const;
+const SCHEDE = ["conversazione", "proposte", "cruscotto", "biblioteca", "mappa", "squadra", "lavora", "ispettore", "capacita"] as const;
 /** i nomi di prima: i link salvati portano alla scheda unica */
 const ALIAS: Record<string, Scheda> = { conversazioni: "conversazione", crawler: "conversazione" };
 type Scheda = (typeof SCHEDE)[number];
@@ -62,6 +66,13 @@ export default function ArgosPage() {
   const [documentoInMappa, setDocumentoInMappa] = useState<number | null>(null);
   const [documentoInBiblioteca, setDocumentoInBiblioteca] = useState<number | null>(null);
   const { isAdmin } = useAuth();
+  // «Parti da questa» (scheda Proposte): il piano va al Pianificatore nella scheda Conversazione
+  const [avvia, setAvvia] = useState<{ piano: PianoArgos; progetto: string } | null>(null);
+  const partiDa = useCallback((p: PropostaAgente) => {
+    if (!p.project_id) return;
+    setAvvia({ piano: pianoDaProposta(p), progetto: p.project_id });
+    setScheda("conversazione");
+  }, []);
 
   useEffect(() => {
     const q = new URLSearchParams();
@@ -102,6 +113,7 @@ export default function ArgosPage() {
         <Tabs value={scheda} onValueChange={v => setScheda(v as Scheda)}>
           <TabsList className="mb-4 flex h-auto flex-wrap justify-start gap-1 bg-muted p-1">
             <TabsTrigger value="conversazione" className="gap-1.5"><MessagesSquare className="h-4 w-4" aria-hidden />Conversazione</TabsTrigger>
+            <TabsTrigger value="proposte" className="gap-1.5"><ListChecks className="h-4 w-4" aria-hidden />Proposte</TabsTrigger>
             <TabsTrigger value="cruscotto" className="gap-1.5"><Gauge className="h-4 w-4" aria-hidden />Cruscotto</TabsTrigger>
             <TabsTrigger value="biblioteca" className="gap-1.5"><BookOpen className="h-4 w-4" aria-hidden />Biblioteca</TabsTrigger>
             <TabsTrigger value="mappa" className="gap-1.5"><Network className="h-4 w-4" aria-hidden />Mappa</TabsTrigger>
@@ -112,8 +124,10 @@ export default function ArgosPage() {
           </TabsList>
           {/* montate sempre: una risposta in arrivo non si perde cambiando scheda */}
           <div hidden={scheda !== "conversazione"}>
-            <Conversazioni progettoIniziale={iniziale.progetto} conversazioneIniziale={iniziale.conversazione} onCambia={conversazioneCambiata} />
+            <Conversazioni progettoIniziale={iniziale.progetto} conversazioneIniziale={iniziale.conversazione} onCambia={conversazioneCambiata}
+              avvia={avvia} onAvviato={() => setAvvia(null)} />
           </div>
+          <TabsContent value="proposte"><Proposte partiDa={partiDa} apriEsecuzione={apriEsecuzione} /></TabsContent>
           <TabsContent value="cruscotto"><Cruscotto apriEsecuzione={apriEsecuzione} /></TabsContent>
           <TabsContent value="biblioteca"><Biblioteca admin={isAdmin} apriInMappa={apriInMappa} documentoIniziale={documentoInBiblioteca} /></TabsContent>
           <TabsContent value="mappa"><Mappa documentoIniziale={documentoInMappa} apriInBiblioteca={apriInBiblioteca} /></TabsContent>

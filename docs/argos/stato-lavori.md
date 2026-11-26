@@ -2356,6 +2356,22 @@ Fatto finora:
     va col suo file; fatto, anche il documento che ha creato (non se era «già
     presente»). Un allegato della chat che c'era finito si può rimettere.
 
+- **La scheda «Proposte» (26/11).** In /argos, dopo «Conversazione»: tutte
+  le proposte dei piani degli agenti (Argos con la squadra, il Pianificatore,
+  l'Analista…), dalla più urgente, con lo stato di avanzamento.
+  - *Gli stati*: da fare → in corso → fatta, oppure scartata. «Parti da
+    questa» la passa al Pianificatore sul suo progetto, in «accetta
+    modifiche», e la segna in corso. Quando il Pianificatore l'ha applicata
+    davvero, si segna fatta da sola. Si può anche segnare a mano: fatta, da
+    fare, scartata (col perché, facoltativo: diventa una lezione per i turni
+    futuri dell'agente), riapri.
+  - *In alto i numeri*: da fare, in corso, fatte, scartate e la percentuale
+    di avanzamento. Filtri per progetto e per gruppo; ogni riga porta al
+    turno che l'ha proposta (ispettore).
+  - *Chi vede che cosa*: le proposte dei progetti che l'utente apre e quelle
+    senza progetto, come le esecuzioni nell'ispettore. Le proposte si leggono
+    e si cambiano solo dentro il cliente (Argos) e il progetto (Cerbero).
+
 ## In sospeso
 
 - ~~**Argos: il connettore MCP** espone solo Planning Studio~~ — deciso il

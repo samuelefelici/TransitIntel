@@ -7,6 +7,8 @@
  * un giro dell'ottimizzatore confrontato con quello di partenza.
  */
 export interface InterventoPiano {
+  /** l'id della proposta salvata (scheda «Proposte»), se c'è: la si segna fatta quando si applica */
+  id: number | null;
   titolo: string;
   dettaglio: string;
   linea: string | null;
@@ -35,12 +37,18 @@ export function pianoDa(v: unknown): PianoArgos | null {
     const titolo = testo(q.title, 200);
     if (!titolo) return [];
     return [{
+      id: typeof q.id === "number" && Number.isInteger(q.id) && q.id > 0 ? q.id : null,
       titolo, dettaglio: testo(q.detail, 1200), linea: forse(q.line, 40), giornoTipo: forse(q.day_type, 40),
       motivo: forse(q.rationale, 600), effetto: forse(q.impact, 300),
     }];
   });
   if (!interventi.length) return null;
   return { sintesi: testo(o.summary, 600), interventi };
+}
+
+/** Gli id delle proposte salvate da cui parte il lavoro (si segnano in corso, poi fatte). */
+export function origineDi(p: PianoArgos): number[] {
+  return p.interventi.map(x => x.id).filter((id): id is number => id !== null);
 }
 
 /** Il titolo della conversazione col Pianificatore. */

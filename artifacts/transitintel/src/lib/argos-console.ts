@@ -432,6 +432,29 @@ export function faseCaricamento(c: Pick<Caricamento, "status" | "stage" | "progr
   return 1;
 }
 
+// ─── Le proposte degli agenti: lo stato di avanzamento (scheda «Proposte») ───
+export type StatoProposta = "open" | "accepted" | "applied" | "rejected";
+export type GruppoProposte = "tutte" | "aperte" | "da_fare" | "in_corso" | "fatte" | "scartate";
+export interface PropostaAgente {
+  id: number; run_id: number; project_id: string; kind: string; title: string;
+  line: string | null; hub: string | null; detail: string; rationale: string; impact: string;
+  day_type: string | null; confidence: string; priority: string; status: StatoProposta;
+  review_note: string | null; created_at: string; updated_at: string;
+  agent_key: string | null; obiettivo: string | null;
+}
+export interface ElencoProposte { conteggi: Record<StatoProposta, number>; proposte: PropostaAgente[] }
+
+export const proposte = {
+  /** progetto: null = tutti quelli che apro, "senza" = senza progetto, oppure l'id */
+  elenco: (progetto: string | null, gruppo: GruppoProposte = "tutte") => {
+    const q = new URLSearchParams({ gruppo });
+    if (progetto) q.set("progetto", progetto);
+    return leggiJson<ElencoProposte>(`${BASE}/proposte?${q}`);
+  },
+  cambia: (id: number, stato: StatoProposta, nota?: string) =>
+    invia<{ ok: boolean }>("PATCH", `${BASE}/proposte/${id}`, nota?.trim() ? { stato, nota: nota.trim() } : { stato }),
+};
+
 async function invia<T>(metodo: string, percorso: string, corpo?: unknown): Promise<T> {
   const r = await fetch(`${getApiBase()}${percorso}`, {
     method: metodo, credentials: "include",
