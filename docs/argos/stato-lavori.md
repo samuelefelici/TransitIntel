@@ -2337,6 +2337,25 @@ Fatto finora:
   Da fare a mano: togliere dalla Biblioteca l'export «ExpBDROP …» entrato
   prima, e il caricamento fermo.
 
+- **Il ciclo si chiude: import dei turni, Applica, elimina (26/11).**
+  - *Argos importa i turni in vigore*: con l'export BDROP allegato e un
+    progetto, Argos guarda l'anteprima di Cerbero (giorni, corse riconosciute
+    nel GTFS) e, coi Calcoli accesi, li importa: lo stesso import di Turni
+    macchina › Importa turni esistenti, nel progetto Scheduling collegato.
+    Poi può leggerli e confrontarli con un giro. Il file va com'era (un .txt
+    si legge come lo legge Cerbero, UTF-8 o Windows-1252).
+  - *Applica col Pianificatore*: sotto il piano di Argos (o di un agente che
+    propone) c'è «Applica col Pianificatore». Con la conferma si apre una
+    conversazione col Pianificatore sullo stesso progetto, in «accetta
+    modifiche», che parte da sola: applica gli interventi rileggendo dopo ogni
+    scrittura, dice come tornare indietro dagli spostamenti (l'annullo del
+    turno toglie le corse create, non riporta gli spostamenti), poi rilancia il
+    giro e lo confronta con quello di partenza.
+  - *Eliminare un caricamento*: in Biblioteca, «Elimina» sulla riga di un
+    caricamento finito (solo amministratore, con conferma). In errore se ne
+    va col suo file; fatto, anche il documento che ha creato (non se era «già
+    presente»). Un allegato della chat che c'era finito si può rimettere.
+
 ## In sospeso
 
 - **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):

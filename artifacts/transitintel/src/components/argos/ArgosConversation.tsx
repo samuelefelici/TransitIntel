@@ -34,6 +34,7 @@ import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
 import { AllegatiMessaggio, BottoneAllega, PilloleAllegati, useAllegati, type AllegatoMessaggio } from "@/components/argos/AllegatiChat";
 import { BottoneCalcoli, SquadraAlLavoro } from "@/components/argos/SquadraAlLavoro";
 import { membroDa, squadraDa, unisciSquadra, type MembroSquadra } from "@/lib/argos-squadra";
+import { pianoDa, type PianoArgos } from "@/lib/argos-applica";
 import { getApiBase } from "@/lib/api";
 import { annunciaScrittura } from "@/lib/argos-live";
 
@@ -159,6 +160,8 @@ type Msg = {
   pianoRunId?: number;
   /** La regia: gli agenti che Argos ha fatto lavorare insieme in questo turno. */
   squadra?: MembroSquadra[];
+  /** Il piano di un agente che propone soltanto (Argos, Analista…): si applica col Pianificatore. */
+  pianoArgos?: PianoArgos;
 };
 
 type ArgosTab = "chat" | "agente";
@@ -279,6 +282,38 @@ const TOOL_LABEL: Record<string, string> = {
 
 function toolLabel(name: string): string {
   return TOOL_LABEL[name] || name.replace(/^(ti_|tpl_|ps_)/, "").replace(/_/g, " ");
+}
+
+/** «Applica col Pianificatore» sotto il piano di un agente che propone soltanto. */
+function ApplicaPiano({ piano, busy, onApplica }: { piano: PianoArgos; busy: boolean; onApplica: () => void }) {
+  const [conferma, setConferma] = React.useState(false);
+  const n = piano.interventi.length;
+  if (!conferma) {
+    return (
+      <div className="mt-1.5">
+        <button type="button" disabled={busy} onClick={() => setConferma(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:opacity-40">
+          <CheckCheck className="h-3.5 w-3.5" aria-hidden />Applica col Pianificatore ({n} {n === 1 ? "intervento" : "interventi"})
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div role="alertdialog" aria-label="Applicare il piano col Pianificatore?"
+      className="mt-1.5 max-w-md rounded-lg border border-emerald-400/40 bg-emerald-500/10 p-2.5 text-[11px] text-emerald-100">
+      <p className="leading-snug">
+        Apro una conversazione col <b>Pianificatore</b> sullo stesso progetto: applica {n === 1 ? "l'intervento" : `i ${n} interventi`} in
+        «accetta modifiche» (scrive sull'orario, rilegge dopo ogni scrittura), poi rilancia il giro dell'ottimizzatore e lo
+        confronta con quello di partenza. Gli spostamenti di corse non si annullano col bottone del turno: il resoconto dice come
+        tornare indietro.
+      </p>
+      <div className="mt-2 flex gap-2">
+        <button type="button" disabled={busy} onClick={() => { setConferma(false); onApplica(); }}
+          className="rounded-md bg-emerald-500/80 px-2.5 py-1 font-semibold text-white hover:bg-emerald-500 disabled:opacity-40">Applica</button>
+        <button type="button" onClick={() => setConferma(false)} className="rounded-md border border-white/15 px-2.5 py-1 text-zinc-300 hover:bg-white/10">No</button>
+      </div>
+    </div>
+  );
 }
 
 /** Cosa dire sotto lo spinner mentre lo stream non produce testo. */
@@ -677,7 +712,9 @@ function ProposalCard({ p, busy, undone, onStatus, onApply }: {
 
 const PROSE_CLS = "prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]";
 
-function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoing, onAskAnswer, onOther, onRetry }: {
+function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoing, onAskAnswer, onOther, onRetry, onApplicaPiano }: {
+  /** il piano di un agente che propone: lo passa al Pianificatore (assente: niente bottone) */
+  onApplicaPiano?: (p: PianoArgos) => void;
   msg: Msg;
   busy: boolean;
   onProposalStatus: (pid: number, status: string, note?: string) => void;
@@ -756,6 +793,11 @@ function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoi
           </div>
         )}
 
+        {/* Il piano di Argos (o di un agente che propone): lo applica il Pianificatore */}
+        {!isUser && !msg.streaming && msg.pianoArgos && onApplicaPiano && (
+          <ApplicaPiano piano={msg.pianoArgos} busy={busy} onApplica={() => onApplicaPiano(msg.pianoArgos!)} />
+        )}
+
         {/* Card del piano emesso in questo turno */}
         {msg.plan && (
           <PlanCard plan={msg.plan} busy={busy} onStatus={onProposalStatus}
@@ -826,7 +868,12 @@ export interface OsservatoreTurno {
   fine(esito: "done" | "error" | "aborted", messaggio?: string | null): void;
 }
 
-export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore }: {
+export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore, onApplicaPiano, primoMessaggio, onPrimoInviato }: {
+  /** il piano di un agente che propone passa al Pianificatore (lo decide chi contiene la chat) */
+  onApplicaPiano?: (p: PianoArgos) => void;
+  /** una conversazione appena nata col suo primo messaggio, che parte da solo in «accetta modifiche» */
+  primoMessaggio?: string;
+  onPrimoInviato?: () => void;
   projectId?: string;
   tiConfigured?: boolean;
   argosReady?: boolean;
@@ -843,6 +890,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [historyLoading, setHistoryLoading] = React.useState(false);
+  // di quale conversazione la storia è già arrivata: il primo messaggio automatico la aspetta,
+  // altrimenti la storia (vuota) arriverebbe dopo e cancellerebbe il turno appena partito
+  const [storiaDi, setStoriaDi] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<ArgosTab>(() => {
     if (typeof window === "undefined") return "chat";
     const s = localStorage.getItem("argos.tab");
@@ -956,6 +1006,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             ...(meta.piano_run_id ? { pianoRunId: Number(meta.piano_run_id) } : {}),
             ...(m.ruolo === "assistant" && Array.isArray(meta.squadra) && meta.squadra.length
               ? { squadra: squadraDa(meta.squadra) } : {}),
+            ...(m.ruolo === "assistant" && meta.piano && !meta.piano_run_id && pianoDa(meta.piano)
+              ? { pianoArgos: pianoDa(meta.piano)! } : {}),
             ...(m.ruolo === "user" && Array.isArray(meta.allegati) && meta.allegati.length
               ? { allegati: meta.allegati.map((a: any) => ({ nome: String(a?.nome ?? "file"), formato: String(a?.formato ?? ""), byte: Number(a?.byte) || 0,
                                                              ...(a?.biblioteca === true ? { biblioteca: true } : {}) })) }
@@ -981,7 +1033,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         }
       })
       .catch(() => { if (!cancelled) setMsgs([]); })
-      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+      .finally(() => { if (!cancelled) { setHistoryLoading(false); setStoriaDi(conversazione.id); } });
     return () => {
       cancelled = true;
       abortRef.current?.abort();
@@ -1214,10 +1266,12 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             patchLast(x => ({ ...x, ask: payload.ask, phase: undefined, note: undefined }));
           } else if (payload.plan && !pianificatore && typeof payload.plan.id !== "number") {
             // Il piano di un agente della squadra (propone soltanto): si legge
-            // come testo, le proposte stanno nell'ispettore della console.
+            // come testo, le proposte stanno nell'ispettore della console; lo
+            // applica il Pianificatore («Applica col Pianificatore»).
             const md = "\n\n" + planToMarkdown(payload.plan as Plan);
+            const piano = pianoDa(payload.plan);
             assistantAccum += md;
-            patchLast(x => ({ ...x, content: x.content + md, phase: undefined, note: undefined }));
+            patchLast(x => ({ ...x, content: x.content + md, phase: undefined, note: undefined, ...(piano ? { pianoArgos: piano } : {}) }));
           } else if (payload.plan) {
             planForSave = payload.plan;
             patchLast(x => ({ ...x, plan: payload.plan, phase: undefined, note: undefined }));
@@ -1298,6 +1352,19 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       }
     }
   };
+
+  // Una conversazione appena nata col suo primo messaggio (Applica col Pianificatore):
+  // parte da solo, in «accetta modifiche», una volta sola e dopo che la storia è arrivata.
+  const primoFatto = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!primoMessaggio || !conversazione || storiaDi !== conversazione.id || loading || msgs.length > 0) return;
+    if (primoFatto.current === conversazione.id) return;
+    primoFatto.current = conversazione.id;
+    setAgentMode("accetta");
+    onPrimoInviato?.();
+    void send(primoMessaggio, "accetta");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primoMessaggio, conversazione?.id, storiaDi, loading, msgs.length]);
 
   const stop = () => { abortRef.current?.abort(); };
 
@@ -1744,6 +1811,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             onAskAnswer={labels => answerAsk(x.id, labels)}
             onOther={() => inputRef.current?.focus()}
             onRetry={t => send(t, undefined, x.retryAllegati)}
+            onApplicaPiano={onApplicaPiano}
           />
         ))}
       </div>
