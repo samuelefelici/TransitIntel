@@ -127,8 +127,12 @@ export async function updateProject(
   return r.project;
 }
 
-export async function deleteProject(id: string): Promise<void> {
-  await apiFetch<{ ok: boolean }>(`/api/scheduling/projects/${id}`, { method: "DELETE" });
+/** Elimina il progetto e tutto ciò che è suo (turni macchina e guida, relazioni, calcoli): irreversibile.
+ *  Il server lo rifiuta (409) se dei turni guida sono nel roster. */
+export async function deleteProject(id: string): Promise<{ turniMacchina: number; turniGuida: number; relazioni: number } | null> {
+  const r = await apiFetch<{ ok: boolean; eliminati?: { turniMacchina: number; turniGuida: number; relazioni: number } }>(
+    `/api/scheduling/projects/${id}`, { method: "DELETE" });
+  return r.eliminati ?? null;
 }
 
 /* ───── Runs ───── */

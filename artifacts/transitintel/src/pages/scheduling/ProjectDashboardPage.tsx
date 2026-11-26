@@ -16,13 +16,13 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Flame, Truck, Users, Zap, ChevronRight,
   Loader2, Calendar, Database, ArrowRight, Share2, Activity, Shield, UserPlus,
-  Check, Lock,
+  Check, Lock, Trash2,
 } from "lucide-react";
 import {
   getProject, STAGE_META, stageProgress,
   listProjectMembers, listProjectActivity,
   listProjectVehicleScenarios, listProjectDriverScenarios,
-  syncProjectFromPs,
+  syncProjectFromPs, deleteProject,
   type SchedulingProject, type ProjectMember, type ProjectActivity,
   type ProjectVehicleScenario, type ProjectDriverScenario,
 } from "@/lib/scheduling-projects-api";
@@ -592,6 +592,17 @@ export default function ProjectDashboardPage() {
                 )}
               </div>
             </div>
+
+            {isOwner && (
+              <EliminaProgetto nome={project.name} turniMacchina={vehScenarios.length} turniGuida={drvScenarios.length}
+                onElimina={async () => {
+                  const n = await deleteProject(project.id);
+                  toast.success(n
+                    ? `Progetto eliminato: ${n.turniMacchina} turni macchina, ${n.turniGuida} turni guida, ${n.relazioni} relazioni`
+                    : "Progetto eliminato");
+                  navigate("/fucina");
+                }} />
+            )}
           </>
         )}
       </div>
@@ -605,6 +616,60 @@ export default function ProjectDashboardPage() {
           canManage={isOwner}
           onChange={refreshShared}
         />
+      )}
+    </div>
+  );
+}
+
+/** Eliminare il progetto (solo il proprietario): se ne va tutto ciò che è suo, irreversibile.
+ *  Si conferma scrivendo il nome; il server lo rifiuta se dei turni guida sono nel roster. */
+function EliminaProgetto({ nome, turniMacchina, turniGuida, onElimina }: {
+  nome: string; turniMacchina: number; turniGuida: number; onElimina: () => Promise<void>;
+}) {
+  const [aperto, setAperto] = useState(false);
+  const [scritto, setScritto] = useState("");
+  const [lavoro, setLavoro] = useState(false);
+  const [errore, setErrore] = useState<string | null>(null);
+  const conferma = scritto.trim() === nome.trim();
+  return (
+    <div className="mt-10 rounded-xl border border-rose-500/25 bg-rose-950/10 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-rose-300/80">Elimina il progetto</p>
+          <p className="mt-1 text-xs text-zinc-400">
+            Se ne va tutto ciò che è suo: {turniMacchina} turni macchina, {turniGuida} turni guida, le relazioni e i calcoli.
+            Non si torna indietro. Se dei turni guida sono nel roster, Cerbero non lo elimina.
+          </p>
+        </div>
+        {!aperto && (
+          <SeScrive>
+            <button type="button" onClick={() => { setAperto(true); setErrore(null); }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/20">
+              <Trash2 className="h-3.5 w-3.5" aria-hidden /> Elimina progetto
+            </button>
+          </SeScrive>
+        )}
+      </div>
+      {aperto && (
+        <form className="mt-3 flex flex-wrap items-center gap-2" role="alertdialog" aria-label="Conferma l'eliminazione del progetto"
+          onSubmit={async e => {
+            e.preventDefault();
+            if (!conferma || lavoro) return;
+            setLavoro(true); setErrore(null);
+            try { await onElimina(); } catch (err: any) { setErrore(err?.message || "Eliminazione non riuscita"); setLavoro(false); }
+          }}>
+          <label htmlFor="elimina-nome" className="text-xs text-zinc-300">Per confermare scrivi il nome del progetto («{nome}»):</label>
+          <input id="elimina-nome" value={scritto} onChange={e => setScritto(e.target.value)} autoFocus autoComplete="off"
+            className="h-8 min-w-0 flex-1 rounded-md border border-rose-500/30 bg-black/40 px-2 text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400" />
+          <button type="submit" disabled={!conferma || lavoro}
+            className="inline-flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-40">
+            {lavoro ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <Trash2 className="h-3.5 w-3.5" aria-hidden />}
+            Elimina definitivamente
+          </button>
+          <button type="button" onClick={() => { setAperto(false); setScritto(""); setErrore(null); }}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">Annulla</button>
+          {errore && <p className="w-full text-xs text-rose-300" role="alert">{errore}</p>}
+        </form>
       )}
     </div>
   );

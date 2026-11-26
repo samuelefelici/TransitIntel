@@ -2388,6 +2388,39 @@ Fatto finora:
   - *Argos*: ogni esecuzione ricorda la sua chat (agent_runs.conversation_id);
     quelle di prima si ricollegano da sole all'avvio, dal turno che le cita.
 
+## La domenica si rifà da capo (26/11)
+
+Decisioni del titolare, da qui in avanti valgono per «Domenica Ancona»:
+
+- **Base**: la relazione «Modifiche al servizio domenicale» (2024): da 442 a
+  337 corse e da 37 a 29 turni guida. Le modifiche: 22 unificata con 24 (dal
+  Q3), 91 unificata con 8, la 3 al posto della 1/3 alternata con la 2 a 25′
+  da P.za Ugo Bassi verso il centro, 1/4 rinforzata (68 corse, pausa 14–15).
+  Il titolare manda il file del progetto; il lavoro va linea per linea,
+  insieme.
+- **Solo domenica e festivi.** Il feriale si rifà dopo. Le corse vecchie di
+  una linea rifatta: se valgono solo la domenica/festivi si cancellano; se
+  valgono anche feriale o sabato si toglie solo il bollino festivo.
+- **Solo il deposito di Ancona.** Auto aziendali: tetto 5 (il progetto è
+  configurato a 6: passarlo esplicito a ogni giro).
+- **Tutti i progetti di scheduling si eliminano** (il titolare, dall'app) e se
+  ne cominciano di nuovi.
+- **Scritture via connettore MCP** con la chiave di scrittura (connettore
+  «Argos write», separato da quello di lettura): descrizione dell'intervento e
+  «sì» prima di ogni scrittura, elenco degli id per le cancellazioni,
+  rilettura dopo. Via connettore la cancellazione di corse non ha il limite
+  «solo create nel turno» dell'agente.
+- **Il 26/11 mattina** Argos (console) aveva già applicato quasi tutta la
+  relazione: 304 corse festive = 337 meno 22/24 e 8. Il giro delle 11:42 non
+  è utilizzabile (6 depositi, tetto auto 6, linea 3 declassata al 100%).
+
+**Eliminare un progetto di scheduling** (Progetti di esercizio → il progetto →
+in fondo «Elimina il progetto», solo il proprietario, si conferma scrivendo il
+nome): se ne vanno turni macchina, turni guida, relazioni, calcoli e registro,
+e il progetto Planning Studio perde il legame. Prima la rotta toglieva solo la
+riga del progetto e i turni restavano orfani nel database. Il roster ferma
+tutto (409) se dei turni guida sono assegnati o pubblicati.
+
 ## In sospeso
 
 - ~~**Argos: il connettore MCP** espone solo Planning Studio~~ — deciso il

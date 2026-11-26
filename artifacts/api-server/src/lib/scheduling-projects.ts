@@ -604,7 +604,12 @@ router.patch("/scheduling/projects/:id", async (req: Request, res: Response): Pr
   res.json({ project: rowToProject(row) });
 });
 
-/* DELETE /api/scheduling/projects/:id — solo owner */
+/* DELETE /api/scheduling/projects/:id — solo owner. Toglie il progetto e TUTTO
+   ciò che è suo, in una transazione: le relazioni di processo, i turni guida,
+   i turni macchina (con loro i membri, ON DELETE CASCADE), i calcoli e il
+   registro (cascade sul progetto); il progetto Planning Studio che lo
+   indicava perde il legame. Prima toglieva solo la riga del progetto e i turni
+   restavano orfani nel database. Il roster lo ferma (409). */
 router.delete("/scheduling/projects/:id", async (req: Request, res: Response): Promise<void> => {
   const id = String(req.params.id || "");
   if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -623,9 +628,34 @@ router.delete("/scheduling/projects/:id", async (req: Request, res: Response): P
   }
   const usi = messaggioUsi(await usiNelRoster({ dssIds }), "Progetto non eliminabile");
   if (usi) { res.status(409).json({ error: usi }); return; }
-  await db.execute(sql`DELETE FROM scheduling_projects WHERE id = ${id}::uuid`);
-  res.json({ ok: true });
+  const eliminati = await eliminaProgetto(id);
+  res.json({ ok: true, eliminati });
 });
+
+/** Il progetto di scheduling e tutto ciò che è suo, in una transazione (vedi la rotta). */
+export async function eliminaProgetto(id: string): Promise<{ turniMacchina: number; turniGuida: number; relazioni: number }> {
+  return db.transaction(async (tx) => {
+    const quante = (r: any) => ((r?.rows ?? []) as unknown[]).length;
+    const relazioni = quante(await tx.execute(sql`
+      DELETE FROM process_reports
+       WHERE project_id = ${id}::uuid
+          OR scenario_id IN (SELECT s.id FROM service_program_scenarios s WHERE s.project_id = ${id}::uuid)
+          OR dss_id IN (SELECT d.id FROM driver_shift_scenarios d
+                          LEFT JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
+                         WHERE d.project_id = ${id}::uuid OR s.project_id = ${id}::uuid)
+      RETURNING id`));
+    const turniGuida = quante(await tx.execute(sql`
+      DELETE FROM driver_shift_scenarios d
+       WHERE d.project_id = ${id}::uuid
+          OR d.service_program_scenario_id IN (SELECT s.id FROM service_program_scenarios s WHERE s.project_id = ${id}::uuid)
+      RETURNING d.id`));
+    const turniMacchina = quante(await tx.execute(sql`
+      DELETE FROM service_program_scenarios WHERE project_id = ${id}::uuid RETURNING id`));
+    await tx.execute(sql`UPDATE ps_projects SET scheduling_project_id = NULL WHERE scheduling_project_id = ${id}::uuid`);
+    await tx.execute(sql`DELETE FROM scheduling_projects WHERE id = ${id}::uuid`);
+    return { turniMacchina, turniGuida, relazioni };
+  });
+}
 
 /* ────────────────────────────────────────────────────────────
  * Runs (versioning)
