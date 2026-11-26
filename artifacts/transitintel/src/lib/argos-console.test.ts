@@ -128,7 +128,8 @@ describe("gli allegati della chat", () => {
     for (const n of ["Accordo.PDF", "regolamento.docx", "slide.pptx", "norma.odt", "appunti.md", "guida.html", "libro.epub"]) {
       expect(imparaDiPartenza(n), n).toBe(true);
     }
-    for (const n of ["turni.xlsx", "km.ods", "fermate.csv", "dati.json", "palina.jpg", "schermata.png", "senza"]) {
+    for (const n of ["turni.xlsx", "km.ods", "fermate.csv", "dati.json", "palina.jpg", "schermata.png", "senza",
+                     "ExpBDROP dal 28-11-2027 al 06-06-2027.txt"]) {
       expect(imparaDiPartenza(n), n).toBe(false);
     }
   });

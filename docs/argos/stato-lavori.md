@@ -2322,6 +2322,21 @@ Fatto finora:
     `routes/argos-console.ts` (`calcoli` sì o no), SPA `SquadraAlLavoro.tsx`
     (`BottoneCalcoli`), `lib/argos-squadra.ts`, `ArgosConversation.tsx`.
 
+- **L'export dei turni (BDROP) in chat, e i titoli doppi (26/11).** Un
+  utente ha allegato «ExpBDROP dal … al …» chiedendo di ricostruire gli
+  stessi turni: Argos lo leggeva riga per riga (100.000 caratteri nel turno)
+  e il 📚 lo mandava nella Biblioteca, dove un export con lo stesso nome c'era
+  già, e il caricamento si fermava («scegli un altro titolo oppure spunta
+  Sostituisci», che dalla chat non si può). Ora Argos riconosce l'export come
+  Cerbero (sezioni `{#…}`, `{#SUPERLIVELLI`): nel turno ne manda solo la
+  testa e indica Turni macchina › Importa turni esistenti, che li ricrea
+  identici agganciati al GTFS; il resto si legge a richiesta. Nella Biblioteca
+  non entra (sono dati, non un documento) e il 📚 è spento di partenza per i
+  file BDROP. Dalla chat, un titolo già presente prende la data (e un numero);
+  lo stesso file già messo da un'altra conversazione si rifiuta col perché.
+  Da fare a mano: togliere dalla Biblioteca l'export «ExpBDROP …» entrato
+  prima, e il caricamento fermo.
+
 ## In sospeso
 
 - **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):

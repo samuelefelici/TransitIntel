@@ -550,6 +550,8 @@ export function caricaAllegato(conversazione: string, file: File, suAvanzamento?
 const DOCUMENTI_DA_IMPARARE = new Set([".pdf", ".docx", ".docm", ".odt", ".pptx", ".pptm", ".odp", ".md", ".markdown",
   ".mmd", ".txt", ".text", ".epub", ".html", ".htm"]);
 export function imparaDiPartenza(nome: string): boolean {
+  // l'export dei turni in vigore (BDROP) è un file di testo ma sono dati: si importa in Turni macchina
+  if (/bdrop/i.test(nome)) return false;
   return DOCUMENTI_DA_IMPARARE.has(estensioneDi(nome));
 }
 
