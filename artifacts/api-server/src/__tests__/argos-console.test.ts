@@ -231,11 +231,21 @@ describe("la biblioteca", () => {
     expect((await request(app()).patch("/api/ai/argos/console/biblioteca/documenti/3").send({ title: "x" })).status).toBe(403);
     expect((await request(app()).delete("/api/ai/argos/console/biblioteca/documenti/3")).status).toBe(403);
     expect((await request(app()).post("/api/ai/argos/console/biblioteca/concetti")).status).toBe(403);
+    expect((await request(app()).delete("/api/ai/argos/console/biblioteca/caricamenti/7")).status).toBe(403);
+    expect((await request(appAdmin()).delete("/api/ai/argos/console/biblioteca/caricamenti/7x")).status).toBe(400);
     expect(stato.chiamate).toHaveLength(0);
     rispondi(200, { id: 3, title: "Nuovo" });
     const r = await request(appAdmin()).patch("/api/ai/argos/console/biblioteca/documenti/3").send({ title: "Nuovo", altro: "x" });
     expect(r.status).toBe(200);
     expect(JSON.parse(stato.chiamate[0]!.init.body)).toEqual({ title: "Nuovo" });
+  });
+
+  it("eliminare un caricamento non riuscito: l'amministratore, inoltrato ad Argos", async () => {
+    rispondi(200, { ok: true, documento_eliminato: null });
+    const r = await request(appAdmin()).delete("/api/ai/argos/console/biblioteca/caricamenti/7");
+    expect(r.status).toBe(200);
+    expect(stato.chiamate[0]!.url).toContain("http://argos.prova/console/biblioteca/caricamenti/7");
+    expect(stato.chiamate[0]!.init.method).toBe("DELETE");
   });
 });
 

@@ -1885,7 +1885,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         </form>
         <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
           {effectiveTab === "chat" && profondo && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
-          {conCalcoli && calcoli && <span className="text-emerald-300 font-semibold">⚙ calcoli accesi: la squadra può lanciare un giro dell'ottimizzatore (minuti, scenario nuovo, l'orario non si tocca) · </span>}
+          {conCalcoli && calcoli && <span className="text-emerald-300 font-semibold">⚙ calcoli accesi: Argos può lanciare un giro dell'ottimizzatore o importare i turni da un export allegato (scenario nuovo, l'orario non si tocca) · </span>}
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
           {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: corse, validità e anche linee nuove · </span>}
