@@ -31,6 +31,7 @@ import { creaVersione, cancellaVersioneDelFeed } from "./versioni-pubblicate";
 import { richiedeDiritto } from "./auth";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
 import { normalizzaWaypoints } from "./waypoints-tracciato";
+import { ricalcaTratto, coordinateValide, type TracciatoCandidato } from "./ricalca-tratto";
 import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /* ════════════════════════════════════════════════════════════
@@ -2098,7 +2099,13 @@ function lineCrossesPolygon(line: [number, number][], poly: [number, number][]):
 
 /** POST /planning-studio/route-snap
  *  body: { mode?: 'driving'|'manual', points: [[lng,lat], ...],
- *          modes?: ('driving'|'manual')[]   — modo PER SEGMENTO (forza tratti manuali),
+ *          modes?: ('driving'|'manual'|'ricalca')[] — modo PER SEGMENTO: 'manual' =
+ *                                        linea retta; 'ricalca' = il pezzo del
+ *                                        tracciato di un'ALTRA linea del progetto
+ *                                        che fa lo stesso tratto (sensi vietati
+ *                                        consentiti ai bus), coi punti intermedi,
+ *          escludiVariante?: uuid           — la variante che si sta ridisegnando
+ *                                        (il suo tracciato vecchio non vale),
  *          curb?: boolean (default true)    — arrivo lato marciapiede alle fermate,
  *          curbMask?: boolean[]             — quali punti sono fermate (curb) vs via liberi,
  *          projectId?: uuid                 — abilita il check zone vietate }
@@ -2120,8 +2127,37 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
   const nSeg = coords.length - 1;
   // Modo per segmento: 'manual' globale vince; altrimenti b.modes[i] per-tratta.
   const modesIn: any[] = Array.isArray(b.modes) ? b.modes : [];
-  const segModes: ("driving" | "manual")[] = Array.from({ length: nSeg }, (_, i) =>
-    mode === "manual" || modesIn[i] === "manual" ? "manual" : "driving");
+  const segModes: ("driving" | "manual" | "ricalca")[] = Array.from({ length: nSeg }, (_, i) =>
+    mode === "manual" || modesIn[i] === "manual" ? "manual" : modesIn[i] === "ricalca" ? "ricalca" : "driving");
+
+  // Progetto: le zone vietate e il ricalco leggono dati SUOI, quindi solo se
+  // chi chiede lo può aprire (prima le zone si leggevano per qualunque id).
+  const projectId = typeof b.projectId === "string" && UUID_RE.test(b.projectId) ? b.projectId : null;
+  if (projectId && !(await loadProjectAccessible(projectId, req.user!.id))) {
+    res.status(404).json({ error: "Progetto non trovato o non accessibile" }); return;
+  }
+  if (segModes.includes("ricalca") && !projectId) {
+    res.status(400).json({ error: "ricalca: serve projectId (si ricalca sui tracciati del progetto)" }); return;
+  }
+  const escludi = typeof b.escludiVariante === "string" && UUID_RE.test(b.escludiVariante) ? b.escludiVariante : null;
+  let candidati: TracciatoCandidato[] | null = null;
+  const caricaCandidati = async (): Promise<TracciatoCandidato[]> => {
+    if (candidati) return candidati;
+    const r = await db.execute(sql`
+      SELECT s.variant_id, s.geometry, v.name AS percorso, rt.short_name AS linea
+        FROM ps_shapes s
+        JOIN ps_route_variants v ON v.id = s.variant_id
+        JOIN ps_routes rt ON rt.id = v.route_id
+       WHERE s.project_id = ${projectId}::uuid
+         AND (${escludi}::uuid IS NULL OR s.variant_id <> ${escludi}::uuid)
+    `);
+    const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+    candidati = rows.map(x => ({
+      variantId: String(x.variant_id), linea: String(x.linea ?? ""), percorso: String(x.percorso ?? ""),
+      coordinate: coordinateValide(x.geometry),
+    })).filter(c => c.coordinate.length >= 2);
+    return candidati;
+  };
   // Curb: default ON. curbMask dice quali punti sono FERMATE (arrivo lato
   // marciapiede); i via liberi restano unrestricted per non sovra-vincolare.
   const curbOn = b.curb === true; // opt-in: con fermate mal georeferenziate produce giri dell'isolato
@@ -2129,7 +2165,8 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
     Array.isArray(b.curbMask) && b.curbMask.length === coords.length
       ? b.curbMask.map(Boolean) : null;
 
-  const segments: { geometry: any; distanceM: number; durationS: number; mode: string }[] =
+  const segments: { geometry: any; distanceM: number; durationS: number; mode: string;
+                    ricalco?: { linea: string; percorso: string; variantId: string; intermedi: [number, number][] } }[] =
     new Array(nSeg);
   let totalDist = 0, totalDur = 0;
   const unified: [number, number][] = [];
@@ -2147,6 +2184,25 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
   // Run di segmenti driving consecutivi → UNA chiamata OSRM multi-punto.
   let i = 0;
   while (i < nSeg) {
+    if (segModes[i] === "ricalca") {
+      const r = ricalcaTratto(await caricaCandidati(), coords[i], coords[i + 1]);
+      if (r) {
+        segments[i] = {
+          geometry: { type: "LineString", coordinates: r.punti }, distanceM: r.metri, durationS: r.metri / 8.33,
+          mode: "ricalca",
+          ricalco: { linea: r.linea, percorso: r.percorso, variantId: r.variantId, intermedi: r.intermedi },
+        };
+        pushCoords(r.punti);
+      } else {
+        // Nessuna linea copre il tratto: la retta si disegna ma si DICHIARA,
+        // chi ha chiesto il ricalco decide (Argos non salva).
+        segments[i] = straightSeg(coords[i], coords[i + 1], "ricalca_mancato");
+        pushCoords(segments[i].geometry.coordinates as [number, number][]);
+      }
+      totalDist += segments[i].distanceM; totalDur += segments[i].durationS;
+      i++;
+      continue;
+    }
     if (segModes[i] === "manual") {
       const s = straightSeg(coords[i], coords[i + 1], "manual");
       segments[i] = s; totalDist += s.distanceM; totalDur += s.durationS;
@@ -2188,7 +2244,6 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
 
   // Zone vietate: se il percorso attraversa un poligono attivo del progetto → violazione.
   const violations: { zoneId: string; name: string }[] = [];
-  const projectId = typeof b.projectId === "string" && UUID_RE.test(b.projectId) ? b.projectId : null;
   if (projectId) {
     try {
       const zr = await db.execute(sql`
@@ -2211,6 +2266,8 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
     // km per tratta (dalle legs OSRM = distanza SU STRADA) allineati ai punti
     legDistances: segments.map(s => s?.distanceM ?? 0),
     legModes: segments.map(s => s?.mode ?? "driving"),
+    // per i tratti ricalcati: da quale linea e con quali punti intermedi
+    ricalchi: segments.map(s => s?.ricalco ?? null),
     distanceM: totalDist,
     durationS: totalDur,
     violations,
