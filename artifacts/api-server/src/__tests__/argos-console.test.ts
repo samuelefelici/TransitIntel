@@ -142,6 +142,45 @@ describe("le proposte degli agenti (scheda «Proposte»)", () => {
     expect(stato.chiamate[1]!.url).not.toContain("progetto=");
   });
 
+  it("la chat d'origine: solo se è dell'utente (e non archiviata); della chat di un altro non esce nulla", async () => {
+    const CHAT = "33333333-3333-4333-8333-333333333333";
+    const io = U.id;
+    rispondi(200, { proposte: [
+      { id: 9, project_id: MIO, status: "open", conversazione: CHAT, conversazione_autore: io,
+        conversazione_titolo: "Ridurre un turno", conversazione_agente: "regista", conversazione_archiviata: false },
+      { id: 8, project_id: MIO, status: "open", conversazione: CHAT, conversazione_autore: "un-altro",
+        conversazione_titolo: "La chat di un altro", conversazione_agente: "regista", conversazione_archiviata: false },
+      { id: 7, project_id: MIO, status: "open", conversazione: CHAT, conversazione_autore: io,
+        conversazione_titolo: "Archiviata", conversazione_agente: "regista", conversazione_archiviata: true },
+      { id: 6, project_id: MIO, status: "open", conversazione: null },
+    ] });
+    const r = await request(app()).get("/api/ai/argos/console/proposte");
+    expect(r.status).toBe(200);
+    expect(r.body.proposte.map((p: any) => p.chat)).toEqual([
+      { id: CHAT, titolo: "Ridurre un turno", agente: "regista" }, null, null, null]);
+    for (const p of r.body.proposte) {
+      expect(Object.keys(p).filter((k) => k.startsWith("conversazione"))).toEqual([]);
+    }
+    expect(JSON.stringify(r.body)).not.toContain("un-altro");
+    expect(JSON.stringify(r.body)).not.toContain("La chat di un altro");
+  });
+
+  it("le proposte di una chat: solo della propria", async () => {
+    const CHAT = "33333333-3333-4333-8333-333333333333";
+    expect((await request(app()).get("/api/ai/argos/console/proposte?conversazione=../x")).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+    rispondi(404, { detail: "Conversazione inesistente" });
+    expect((await request(app()).get(`/api/ai/argos/console/proposte?conversazione=${CHAT}`)).status).toBe(404);
+    expect(stato.chiamate).toHaveLength(1);
+    expect(stato.chiamate[0]!.url).toContain(`autore=${U.id}`);
+    rispondi(200, { conversazione: { id: CHAT, progetto: MIO }, messaggi: [] });
+    rispondi(200, { proposte: [{ id: 9, project_id: MIO, status: "open" }] });
+    const r = await request(app()).get(`/api/ai/argos/console/proposte?conversazione=${CHAT}`);
+    expect(r.status).toBe(200);
+    expect(stato.chiamate[2]!.url).toContain(`conversazione=${CHAT}`);
+    expect(r.body.proposte.map((p: any) => p.id)).toEqual([9]);
+  });
+
   it("cambiare stato: validato, e su un progetto altrui no", async () => {
     expect((await request(app()).patch("/api/ai/argos/console/proposte/5").send({ stato: "cancellata" })).status).toBe(400);
     expect((await request(app()).patch("/api/ai/argos/console/proposte/x").send({ stato: "open" })).status).toBe(400);
@@ -402,6 +441,30 @@ describe("le conversazioni", () => {
     expect(stato.chiamate[1]!.url).toBe(`http://argos.prova/console/conversazioni/${CONV}/messaggi`);
     expect(corpo(1)).toMatchObject({ autore: io, testo: "Rinforza la linea 1", modalita: "accetta", ti_auth_token: "jwt-prova" });
     expect(corpo(1).calcoli).toBe(false);
+  });
+
+  it("«Applica col Pianificatore» nella stessa chat: ospite solo il Pianificatore, solo in «accetta modifiche»", async () => {
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Applica", modalita: "accetta", ospite: "analista" })).status).toBe(400);
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Applica", modalita: "agente", ospite: "pianificatore" })).status).toBe(400);
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Applica", ospite: "pianificatore" })).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+    // la chat di un altro (o su un progetto che non si apre più): Argos non la riceve
+    rispondi(200, { conversazione: { id: CONV, modo: "agente", agente: "regista", progetto: ALTRUI }, messaggi: [] });
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Applica", modalita: "accetta", ospite: "pianificatore" })).status).toBe(404);
+    expect(stato.chiamate).toHaveLength(1);
+    rispondi(200, { conversazione: { id: CONV, modo: "agente", agente: "regista", progetto: MIO }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Applica ORA il piano", modalita: "accetta", ospite: "pianificatore" });
+    expect(corpo(2)).toMatchObject({ autore: io, modalita: "accetta", ospite: "pianificatore", ti_auth_token: "jwt-prova" });
+    rispondi(200, { conversazione: { id: CONV, modo: "agente", agente: "regista", progetto: MIO }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Com'è andata?" });
+    expect(corpo(4).ospite).toBeUndefined();
   });
 
   it("«Calcoli»: ad Argos solo se l'utente li accende, e solo sì o no", async () => {

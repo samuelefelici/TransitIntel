@@ -24,8 +24,7 @@ import Biblioteca from "@/components/argos-console/Biblioteca";
 import Mappa from "@/components/argos-console/Mappa";
 import Conversazioni from "@/components/argos-console/Conversazioni";
 import Proposte from "@/components/argos-console/Proposte";
-import { pianoDaProposta } from "@/lib/argos-proposte";
-import type { PianoArgos } from "@/lib/argos-applica";
+import { avvioDa, type Avvio } from "@/lib/argos-proposte";
 import type { PropostaAgente } from "@/lib/argos-console";
 import { TemaArgosContesto } from "@/lib/argos-tema";
 import { useTema } from "@/hooks/use-tema";
@@ -66,11 +65,16 @@ export default function ArgosPage() {
   const [documentoInMappa, setDocumentoInMappa] = useState<number | null>(null);
   const [documentoInBiblioteca, setDocumentoInBiblioteca] = useState<number | null>(null);
   const { isAdmin } = useAuth();
-  // «Parti da questa» (scheda Proposte): il piano va al Pianificatore nella scheda Conversazione
-  const [avvia, setAvvia] = useState<{ piano: PianoArgos; progetto: string } | null>(null);
+  // Dalla scheda Proposte alla Conversazione: la chat d'origine si riapre e lì il Pianificatore
+  // applica la proposta («Parti da questa»); una chat nuova solo se non viene da una chat dell'utente.
+  const [avvia, setAvvia] = useState<Avvio | null>(null);
   const partiDa = useCallback((p: PropostaAgente) => {
     if (!p.project_id) return;
-    setAvvia({ piano: pianoDaProposta(p), progetto: p.project_id });
+    setAvvia(avvioDa(p));
+    setScheda("conversazione");
+  }, []);
+  const apriChat = useCallback((conversazione: string) => {
+    setAvvia({ tipo: "apri", conversazione });
     setScheda("conversazione");
   }, []);
 
@@ -127,7 +131,7 @@ export default function ArgosPage() {
             <Conversazioni progettoIniziale={iniziale.progetto} conversazioneIniziale={iniziale.conversazione} onCambia={conversazioneCambiata}
               avvia={avvia} onAvviato={() => setAvvia(null)} />
           </div>
-          <TabsContent value="proposte"><Proposte partiDa={partiDa} apriEsecuzione={apriEsecuzione} /></TabsContent>
+          <TabsContent value="proposte"><Proposte partiDa={partiDa} apriEsecuzione={apriEsecuzione} apriChat={apriChat} /></TabsContent>
           <TabsContent value="cruscotto"><Cruscotto apriEsecuzione={apriEsecuzione} /></TabsContent>
           <TabsContent value="biblioteca"><Biblioteca admin={isAdmin} apriInMappa={apriInMappa} documentoIniziale={documentoInBiblioteca} /></TabsContent>
           <TabsContent value="mappa"><Mappa documentoIniziale={documentoInMappa} apriInBiblioteca={apriInBiblioteca} /></TabsContent>

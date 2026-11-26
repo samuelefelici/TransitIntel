@@ -5,13 +5,15 @@
  *
  * Da fare → in corso (la sta applicando il Pianificatore) → fatta; oppure
  * scartata, col perché (diventa una lezione per i turni futuri dell'agente).
- * «Parti da questa» la passa al Pianificatore sul suo progetto, nella scheda
- * Conversazione; quando il Pianificatore l'applica, si segna fatta da sola.
+ * Ogni proposta resta nella chat da cui è nata: il link la riapre, e «Parti da
+ * questa» la fa applicare LÌ al Pianificatore, in «accetta modifiche» (niente
+ * chat nuove; una sola se la proposta non viene da una chat dell'utente).
+ * Quando il Pianificatore l'applica, si segna fatta da sola.
  * Si vedono quelle dei progetti che l'utente apre e quelle senza progetto.
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, ListChecks, Play, RotateCcw, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ListChecks, MessageSquare, Play, RotateCcw, X } from "lucide-react";
 import { listPsProjects } from "@/lib/planning-studio-api";
 import { proposte, quandoFa, type GruppoProposte, type PropostaAgente, type StatoProposta } from "@/lib/argos-console";
 import { avanzamento, azioni, NOME_PRIORITA, NOME_STATO, nomeAgente } from "@/lib/argos-proposte";
@@ -25,9 +27,11 @@ const GRUPPI: Array<{ k: GruppoProposte; nome: string }> = [
 ];
 const CAMPO = "h-9 rounded-md border border-border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export default function Proposte({ partiDa, apriEsecuzione }: {
+export default function Proposte({ partiDa, apriEsecuzione, apriChat }: {
   partiDa: (p: PropostaAgente) => void;
   apriEsecuzione: (runId: number) => void;
+  /** riapre la chat da cui la proposta è nata */
+  apriChat: (conversazione: string) => void;
 }) {
   const qc = useQueryClient();
   const [progetto, setProgetto] = useState<string>("");
@@ -88,7 +92,8 @@ export default function Proposte({ partiDa, apriEsecuzione }: {
             {elenco.data.proposte.map(p => (
               <RigaProposta key={p.id} p={p} progetto={nomeProgetto(p.project_id)} occupato={cambia.isPending}
                 cambia={(stato, nota) => cambia.mutate({ id: p.id, stato, nota })}
-                parti={() => partiDa(p)} apriEsecuzione={() => apriEsecuzione(p.run_id)} />
+                parti={() => partiDa(p)} apriEsecuzione={() => apriEsecuzione(p.run_id)}
+                apriChat={p.chat ? () => apriChat(p.chat!.id) : undefined} />
             ))}
           </ol>
         )}
@@ -98,9 +103,10 @@ export default function Proposte({ partiDa, apriEsecuzione }: {
   );
 }
 
-function RigaProposta({ p, progetto, occupato, cambia, parti, apriEsecuzione }: {
+function RigaProposta({ p, progetto, occupato, cambia, parti, apriEsecuzione, apriChat }: {
   p: PropostaAgente; progetto: string; occupato: boolean;
   cambia: (stato: StatoProposta, nota?: string) => void; parti: () => void; apriEsecuzione: () => void;
+  apriChat?: () => void;
 }) {
   const [aperta, setAperta] = useState(false);
   const [scarto, setScarto] = useState<string | null>(null);
@@ -121,6 +127,13 @@ function RigaProposta({ p, progetto, occupato, cambia, parti, apriEsecuzione }: 
             <Pill tinta={TINTA_STATO[p.status]}>{NOME_STATO[p.status]}</Pill>
           </div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">{meta}</div>
+          {apriChat && p.chat && (
+            <button type="button" onClick={apriChat}
+              className="mt-0.5 inline-flex max-w-full items-center gap-1 text-[11px] text-primary underline-offset-2 hover:underline">
+              <MessageSquare className="h-3 w-3 shrink-0" aria-hidden />
+              <span className="truncate">nella chat «{p.chat.titolo || "senza titolo"}»</span>
+            </button>
+          )}
           {p.impact && <div className="mt-1 text-xs">Effetto atteso: {p.impact}</div>}
           {aperta && (
             <dl className="mt-2 space-y-1 text-xs">
@@ -139,7 +152,9 @@ function RigaProposta({ p, progetto, occupato, cambia, parti, apriEsecuzione }: 
         <div className="flex flex-wrap items-center gap-1">
           {azioni(p).map(a => {
             if (a === "parti") return (
-              <button key={a} type="button" disabled={occupato} onClick={parti} title="Il Pianificatore la applica sul progetto, in «accetta modifiche», poi verifica"
+              <button key={a} type="button" disabled={occupato} onClick={parti}
+                title={p.chat ? `Il Pianificatore la applica nella sua chat («${p.chat.titolo || "senza titolo"}»), in «accetta modifiche», poi verifica`
+                  : "Non viene da una tua chat: se ne apre una nuova col Pianificatore sul progetto, in «accetta modifiche»"}
                 className={`${BOTTONE} bg-primary text-primary-foreground hover:bg-primary/90`}><Play className="h-3.5 w-3.5" aria-hidden />Parti da questa</button>
             );
             if (a === "fatta") return (

@@ -51,6 +51,21 @@ export function origineDi(p: PianoArgos): number[] {
   return p.interventi.map(x => x.id).filter((id): id is number => id !== null);
 }
 
+/** Gli interventi ancora da applicare: senza quelli già fatti o scartati (lo stato viene dalla
+ *  scheda «Proposte»; un intervento senza proposta salvata resta). */
+export function ancoraDaFare(p: PianoArgos, stati: ReadonlyMap<number, string>): PianoArgos {
+  return { ...p, interventi: p.interventi.filter(x => x.id === null || !FINITI.has(stati.get(x.id) ?? "")) };
+}
+const FINITI = new Set(["applied", "rejected"]);
+
+/** Il turno che applica un piano DENTRO una chat (niente chat nuove): parte da solo, in
+ *  «accetta modifiche». Nella chat di un altro agente il Pianificatore entra come ospite. */
+export interface DaInviare { chiave: string; testo: string; ospite: boolean; origine: number[] }
+
+export function applicaInChat(p: PianoArgos, agenteDellaChat: string | null, chiave: string): DaInviare {
+  return { chiave, testo: promptApplica(p), ospite: agenteDellaChat !== "pianificatore", origine: origineDi(p) };
+}
+
 /** Il titolo della conversazione col Pianificatore. */
 export function titoloApplica(p: PianoArgos): string {
   return `Applica: ${p.sintesi || p.interventi[0]!.titolo}`.slice(0, 110);
