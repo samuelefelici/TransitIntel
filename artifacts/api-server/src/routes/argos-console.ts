@@ -183,6 +183,63 @@ router.get("/ai/argos/console/esecuzioni", async (req, res) => {
   res.json({ totale: visibili.length, esecuzioni: visibili });
 });
 
+// ─── Le proposte degli agenti: lo stato di avanzamento (scheda «Proposte») ───
+// Si vedono come le esecuzioni: quelle di un progetto chi lo apre, quelle senza
+// progetto chi entra nella console. I conteggi si rifanno qui, sulle sole visibili.
+const STATI_PROPOSTA = ["open", "accepted", "applied", "rejected"] as const;
+const GRUPPI_PROPOSTE: Record<string, readonly string[]> = {
+  tutte: STATI_PROPOSTA, aperte: ["open", "accepted"], da_fare: ["open"], in_corso: ["accepted"],
+  fatte: ["applied"], scartate: ["rejected"],
+};
+
+// GET /api/ai/argos/console/proposte?progetto=<uuid>|senza&gruppo=
+router.get("/ai/argos/console/proposte", async (req, res) => {
+  const userId = utenteDi(req);
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  const gruppo = req.query.gruppo === undefined ? "tutte" : String(req.query.gruppo);
+  if (!GRUPPI_PROPOSTE[gruppo]) { res.status(400).json({ error: "gruppo non valido" }); return; }
+  const p = req.query.progetto === undefined || req.query.progetto === "" ? undefined : String(req.query.progetto);
+  if (p !== undefined && p !== "senza" && !UUID_RE.test(p)) { res.status(400).json({ error: "progetto non valido" }); return; }
+  if (p && p !== "senza") {
+    const ok = await accessoAlProgetto(p, userId).catch(() => null);
+    if (!ok) { res.status(404).json({ error: "Progetto non trovato o accesso negato" }); return; }
+  }
+  // tutte, poi si filtra: i conteggi devono essere quelli delle sole proposte visibili
+  const d = await leggi(res, "/proposte", { progetto: p === "senza" ? undefined : p, gruppo: "tutte", limit: "500" });
+  if (d === undefined) return;
+  let righe: any[] = Array.isArray(d?.proposte) ? d.proposte : [];
+  if (p === "senza") righe = righe.filter((r) => !r.project_id);
+  const accessibili = await progettiAccessibili(righe.map((r) => String(r.project_id || "")).filter(Boolean), userId);
+  const visibili = soloVisibili(righe, accessibili);
+  const conteggi = Object.fromEntries(STATI_PROPOSTA.map((s) => [s, visibili.filter((r) => r.status === s).length]));
+  res.json({ conteggi, proposte: visibili.filter((r) => GRUPPI_PROPOSTE[gruppo]!.includes(r.status)) });
+});
+
+// PATCH /api/ai/argos/console/proposte/:id { stato, nota? } → da fare, in corso, fatta, scartata
+router.patch("/ai/argos/console/proposte/:id", async (req, res) => {
+  const userId = utenteDi(req);
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof b.stato !== "string" || !(STATI_PROPOSTA as readonly string[]).includes(b.stato)) {
+    res.status(400).json({ error: "stato non valido (open, accepted, applied, rejected)" }); return;
+  }
+  if (b.nota !== undefined && (typeof b.nota !== "string" || b.nota.length > 500)) {
+    res.status(400).json({ error: "nota: un testo di al più 500 caratteri" }); return;
+  }
+  const d = await leggi(res, `/proposte/${req.params.id}`);
+  if (d === undefined) return;
+  const progetto = d?.proposta?.project_id;
+  if (progetto) {
+    const ok = await accessoAlProgetto(String(progetto), userId).catch(() => null);
+    if (!ok) { res.status(404).json({ error: "Proposta non trovata" }); return; }
+  }
+  const corpo: Record<string, string> = { stato: b.stato };
+  if (typeof b.nota === "string" && b.nota.trim()) corpo.nota = b.nota.trim();
+  const e = await scrivi(res, "PATCH", `/console/proposte/${req.params.id}`, corpo);
+  if (e !== undefined) res.json(e);
+});
+
 // GET /api/ai/argos/console/esecuzioni/:id → run, eventi in ordine, proposte
 router.get("/ai/argos/console/esecuzioni/:id", async (req, res) => {
   const userId = utenteDi(req);

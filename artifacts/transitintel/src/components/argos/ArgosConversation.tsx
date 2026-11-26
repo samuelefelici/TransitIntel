@@ -35,6 +35,7 @@ import { AllegatiMessaggio, BottoneAllega, PilloleAllegati, useAllegati, type Al
 import { BottoneCalcoli, SquadraAlLavoro } from "@/components/argos/SquadraAlLavoro";
 import { membroDa, squadraDa, unisciSquadra, type MembroSquadra } from "@/lib/argos-squadra";
 import { pianoDa, type PianoArgos } from "@/lib/argos-applica";
+import { proposte as proposteApi } from "@/lib/argos-console";
 import { getApiBase } from "@/lib/api";
 import { annunciaScrittura } from "@/lib/argos-live";
 
@@ -868,11 +869,13 @@ export interface OsservatoreTurno {
   fine(esito: "done" | "error" | "aborted", messaggio?: string | null): void;
 }
 
-export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore, onApplicaPiano, primoMessaggio, onPrimoInviato }: {
+export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore, onApplicaPiano, primoMessaggio, onPrimoInviato, origineProposte }: {
   /** il piano di un agente che propone passa al Pianificatore (lo decide chi contiene la chat) */
   onApplicaPiano?: (p: PianoArgos) => void;
   /** una conversazione appena nata col suo primo messaggio, che parte da solo in «accetta modifiche» */
   primoMessaggio?: string;
+  /** le proposte (scheda «Proposte») da cui nasce quel primo messaggio: fatte se il Pianificatore le applica tutte */
+  origineProposte?: number[];
   onPrimoInviato?: () => void;
   projectId?: string;
   tiConfigured?: boolean;
@@ -1330,6 +1333,17 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       setLoading(false);
       abortRef.current = null;
       osserva(o => o.fine(turnFailed ? "error" : sawDone || planForSave ? "done" : "aborted", erroreTurno));
+      // Le proposte da cui è partito questo turno (scheda «Proposte»): fatte se il
+      // Pianificatore ha applicato davvero ogni intervento del suo resoconto; altrimenti
+      // restano «in corso» e chi guarda decide.
+      if (origineRef.current) {
+        const origine = origineRef.current;
+        origineRef.current = null;
+        const resoconto = planForSave?.proposals ?? [];
+        if (!turnFailed && resoconto.length > 0 && resoconto.every(p => p.status === "applied")) {
+          void Promise.allSettled(origine.map(id => proposteApi.cambia(id, "applied")));
+        }
+      }
       // Piano e domanda vivono nelle rispettive tabelle/carte; nello storico
       // testuale ne resta una traccia leggibile per i turni successivi.
       // Un turno FALLITO senza alcuna risposta non si salva: altrimenti ogni
@@ -1356,10 +1370,13 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   // Una conversazione appena nata col suo primo messaggio (Applica col Pianificatore):
   // parte da solo, in «accetta modifiche», una volta sola e dopo che la storia è arrivata.
   const primoFatto = React.useRef<string | null>(null);
+  // le proposte d'origine del primo messaggio: a fine turno, fatte se il piano le ha applicate tutte
+  const origineRef = React.useRef<number[] | null>(null);
   React.useEffect(() => {
     if (!primoMessaggio || !conversazione || storiaDi !== conversazione.id || loading || msgs.length > 0) return;
     if (primoFatto.current === conversazione.id) return;
     primoFatto.current = conversazione.id;
+    origineRef.current = origineProposte?.length ? origineProposte : null;
     setAgentMode("accetta");
     onPrimoInviato?.();
     void send(primoMessaggio, "accetta");

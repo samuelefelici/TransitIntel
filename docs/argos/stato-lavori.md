@@ -2356,11 +2356,29 @@ Fatto finora:
     va col suo file; fatto, anche il documento che ha creato (non se era «già
     presente»). Un allegato della chat che c'era finito si può rimettere.
 
+- **La scheda «Proposte» (26/11).** In /argos, dopo «Conversazione»: tutte
+  le proposte dei piani degli agenti (Argos con la squadra, il Pianificatore,
+  l'Analista…), dalla più urgente, con lo stato di avanzamento.
+  - *Gli stati*: da fare → in corso → fatta, oppure scartata. «Parti da
+    questa» la passa al Pianificatore sul suo progetto, in «accetta
+    modifiche», e la segna in corso. Quando il Pianificatore l'ha applicata
+    davvero, si segna fatta da sola. Si può anche segnare a mano: fatta, da
+    fare, scartata (col perché, facoltativo: diventa una lezione per i turni
+    futuri dell'agente), riapri.
+  - *In alto i numeri*: da fare, in corso, fatte, scartate e la percentuale
+    di avanzamento. Filtri per progetto e per gruppo; ogni riga porta al
+    turno che l'ha proposta (ispettore).
+  - *Chi vede che cosa*: le proposte dei progetti che l'utente apre e quelle
+    senza progetto, come le esecuzioni nell'ispettore. Le proposte si leggono
+    e si cambiano solo dentro il cliente (Argos) e il progetto (Cerbero).
+
 ## In sospeso
 
-- **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):
-  niente documenti, esercizio, turni, parco, allegati. Agisce per conto del
-  proprietario del progetto: da decidere che cosa aprire a chi ha la chiave.
+- ~~**Argos: il connettore MCP** espone solo Planning Studio~~ — deciso il
+  26/11: apre anche Biblioteca, Cerbero a 360°, turni guida salvati, parco
+  dell'Officina e (col database collegato) territorio ed esercizio; il roster
+  resta fuori, anche a soli conteggi. Agisce coi diritti del proprietario del
+  progetto: la chiave di lettura resta al titolare.
 - **Argos: la simulazione delle tariffe** (`/api/fares/simulate*`, POST con
   un corpo da comporre) non è ancora uno strumento: oggi c'è il preventivo fra
   due fermate.
