@@ -441,14 +441,18 @@ export interface PropostaAgente {
   day_type: string | null; confidence: string; priority: string; status: StatoProposta;
   review_note: string | null; created_at: string; updated_at: string;
   agent_key: string | null; obiettivo: string | null;
+  /** la chat da cui nasce, se è dell'utente (e non archiviata): lì la si riapre e lì si applica */
+  chat: ChatDellaProposta | null;
 }
+export interface ChatDellaProposta { id: string; titolo: string; agente: string | null }
 export interface ElencoProposte { conteggi: Record<StatoProposta, number>; proposte: PropostaAgente[] }
 
 export const proposte = {
-  /** progetto: null = tutti quelli che apro, "senza" = senza progetto, oppure l'id */
-  elenco: (progetto: string | null, gruppo: GruppoProposte = "tutte") => {
+  /** progetto: null = tutti quelli che apro, "senza" = senza progetto, oppure l'id; conversazione: quelle di una chat mia */
+  elenco: (progetto: string | null, gruppo: GruppoProposte = "tutte", conversazione?: string) => {
     const q = new URLSearchParams({ gruppo });
     if (progetto) q.set("progetto", progetto);
+    if (conversazione) q.set("conversazione", conversazione);
     return leggiJson<ElencoProposte>(`${BASE}/proposte?${q}`);
   },
   cambia: (id: number, stato: StatoProposta, nota?: string) =>

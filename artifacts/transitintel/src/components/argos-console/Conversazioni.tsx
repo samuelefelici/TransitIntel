@@ -23,8 +23,8 @@ import {
   type Conversazione, type ModoConversazione,
 } from "@/lib/argos-console";
 import type { OsservatoreTurno } from "@/components/argos/ArgosConversation";
-import { origineDi, promptApplica, titoloApplica, type PianoArgos } from "@/lib/argos-applica";
-import { proposte as proposteApi } from "@/lib/argos-console";
+import { applicaInChat, titoloApplica, type DaInviare, type PianoArgos } from "@/lib/argos-applica";
+import type { Avvio } from "@/lib/argos-proposte";
 import { Caricamento, Pill, Problema, Vuoto } from "./comuni";
 import { StudioNeurale } from "./StudioNeurale";
 
@@ -47,8 +47,8 @@ function messaggioDi(err: unknown): string {
 export default function Conversazioni({ progettoIniziale, conversazioneIniziale, onCambia, avvia, onAvviato }: {
   progettoIniziale: string | null;
   conversazioneIniziale: string | null;
-  /** «Parti da questa» dalla scheda Proposte: il piano da passare al Pianificatore su quel progetto */
-  avvia?: { piano: PianoArgos; progetto: string } | null;
+  /** dalla scheda Proposte: aprire la chat d'origine, o applicare una proposta (nella sua chat) */
+  avvia?: Avvio | null;
   onAvviato?: () => void;
   /** la conversazione aperta e il progetto del filtro, per l'indirizzo della pagina */
   onCambia: (conversazione: string | null, progetto: string | null) => void;
@@ -64,29 +64,38 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
   const [nuova, setNuova] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
   const [lavoro, setLavoro] = useState<string | null>(null);
-  // «Applica col Pianificatore»: la conversazione nuova e il messaggio che parte da solo
-  const [inizio, setInizio] = useState<{ conv: string; testo: string; origine: number[] } | null>(null);
+  // il turno che parte da solo nella conversazione aperta («Parti da questa» dalla scheda Proposte)
+  const [inizio, setInizio] = useState<{ conv: string; daInviare: DaInviare } | null>(null);
 
-  /** Il piano passa al Pianificatore: una conversazione sul progetto, che parte da sola in «accetta
-   *  modifiche»; le proposte d'origine si segnano «in corso». */
+  /** Una proposta che non viene da una chat dell'utente: una conversazione nuova col Pianificatore
+   *  sul progetto, che parte da sola in «accetta modifiche». */
   const passaAlPianificatore = useCallback(async (progetto: string, piano: PianoArgos) => {
     const d = await esegui("crea", () => conversazioni.crea({
       modo: "agente", agente: "pianificatore", progetto, titolo: titoloApplica(piano),
     }));
     if (!d) return;
-    const origine = origineDi(piano);
-    void Promise.allSettled(origine.map(id => proposteApi.cambia(id, "accepted")));
-    setInizio({ conv: d.conversazione.id, testo: promptApplica(piano), origine });
+    const id = d.conversazione.id;
+    setInizio({ conv: id, daInviare: applicaInChat(piano, "pianificatore", `${id}:nuova`) });
     setNuova(false);
     aggiorna();
-    setAperta(d.conversazione.id);
+    setAperta(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // «Parti da questa» dalla scheda Proposte
+  // Dalla scheda Proposte: la chat d'origine si riapre, e una proposta si applica LÌ (il
+  // Pianificatore entra come ospite nella chat di Argos). Una chat nuova solo per le proposte
+  // che non vengono da una chat dell'utente.
   useEffect(() => {
     if (!avvia) return;
     onAvviato?.();
+    if (avvia.tipo === "apri") { setNuova(false); setAperta(avvia.conversazione); return; }
+    if (avvia.chat) {
+      const { id, agente } = avvia.chat;
+      setNuova(false);
+      setAperta(id);
+      setInizio({ conv: id, daInviare: applicaInChat(avvia.piano, agente, `${id}:${Date.now()}`) });
+      return;
+    }
     void passaAlPianificatore(avvia.progetto, avvia.piano);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avvia]);
@@ -281,11 +290,8 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
               if (await esegui("elimina", () => conversazioni.elimina(conv.id))) { aggiorna(); setAperta(null); }
             }}
             onTurnoFinito={aggiorna}
-            onApplicaPiano={conv.progetto && !conv.archiviata && conv.agente !== "pianificatore"
-              ? piano => { void passaAlPianificatore(conv.progetto!, piano); } : undefined}
-            primoMessaggio={inizio?.conv === conv.id ? inizio.testo : undefined}
-            origineProposte={inizio?.conv === conv.id ? inizio.origine : undefined}
-            onPrimoInviato={() => setInizio(null)}
+            daInviare={inizio?.conv === conv.id ? inizio.daInviare : undefined}
+            onInviato={() => setInizio(null)}
           />
         )}
       </section>
@@ -378,11 +384,9 @@ function NuovaConversazione({ progettoIniziale, progetti, agenti, inCorso, annul
   );
 }
 
-function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPronto, tiConfigured, rinomina, archivia, elimina, onTurnoFinito, onApplicaPiano, primoMessaggio, onPrimoInviato, origineProposte }: {
-  onApplicaPiano?: (piano: PianoArgos) => void;
-  primoMessaggio?: string;
-  origineProposte?: number[];
-  onPrimoInviato?: () => void;
+function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPronto, tiConfigured, rinomina, archivia, elimina, onTurnoFinito, daInviare, onInviato }: {
+  daInviare?: DaInviare;
+  onInviato?: () => void;
   conv: Conversazione;
   nomeAgente: string | null;
   nomeProgetto: string | null;
@@ -454,10 +458,8 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
               argosReady={argosPronto}
               tiConfigured={tiConfigured}
               onTurnoFinito={onTurnoFinito}
-              onApplicaPiano={onApplicaPiano}
-              primoMessaggio={primoMessaggio}
-              onPrimoInviato={onPrimoInviato}
-              origineProposte={origineProposte}
+              daInviare={daInviare}
+              onInviato={onInviato}
               solaLettura={conv.archiviata ? "Archiviata: ripristinala per continuare" : undefined}
               osservatore={conv.archiviata ? undefined : osservatore}
             />

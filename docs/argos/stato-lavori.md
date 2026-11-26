@@ -2372,6 +2372,22 @@ Fatto finora:
     senza progetto, come le esecuzioni nell'ispettore. Le proposte si leggono
     e si cambiano solo dentro il cliente (Argos) e il progetto (Cerbero).
 
+- **Le proposte restano nella loro chat (26/11).** Su richiesta del titolare:
+  niente chat nuove che disperdono il lavoro.
+  - *Applica col Pianificatore*: il Pianificatore fa il suo turno DENTRO la
+    chat di Argos (o dell'agente che ha proposto), in «accetta modifiche», con
+    il resoconto, la revisione e l'annullo come nelle sue chat. Legge solo il
+    dialogo visibile e lascia in coda un turno di solo testo, che Argos rilegge
+    al turno dopo: ragionamenti, strumenti e prompt di Argos non si toccano.
+  - *Lo stato nella chat*: sotto il piano, ogni intervento ha il suo stato (da
+    fare, in corso, fatta, scartata) e «Applica» manda solo quelli che restano.
+  - *Dalla scheda Proposte*: ogni proposta porta il link alla chat da cui è
+    nata (solo se è dell'utente e non archiviata) e «Parti da questa» la
+    applica lì. Una chat nuova col Pianificatore solo per le proposte che non
+    vengono da una chat dell'utente.
+  - *Argos*: ogni esecuzione ricorda la sua chat (agent_runs.conversation_id);
+    quelle di prima si ricollegano da sole all'avvio, dal turno che le cita.
+
 ## In sospeso
 
 - ~~**Argos: il connettore MCP** espone solo Planning Studio~~ — deciso il

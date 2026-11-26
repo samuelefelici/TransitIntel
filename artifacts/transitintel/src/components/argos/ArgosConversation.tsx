@@ -34,8 +34,9 @@ import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
 import { AllegatiMessaggio, BottoneAllega, PilloleAllegati, useAllegati, type AllegatoMessaggio } from "@/components/argos/AllegatiChat";
 import { BottoneCalcoli, SquadraAlLavoro } from "@/components/argos/SquadraAlLavoro";
 import { membroDa, squadraDa, unisciSquadra, type MembroSquadra } from "@/lib/argos-squadra";
-import { pianoDa, type PianoArgos } from "@/lib/argos-applica";
-import { proposte as proposteApi } from "@/lib/argos-console";
+import { ancoraDaFare, origineDi, pianoDa, promptApplica, type DaInviare, type PianoArgos } from "@/lib/argos-applica";
+import { proposte as proposteApi, type StatoProposta } from "@/lib/argos-console";
+import { NOME_STATO } from "@/lib/argos-proposte";
 import { getApiBase } from "@/lib/api";
 import { annunciaScrittura } from "@/lib/argos-live";
 
@@ -285,34 +286,63 @@ function toolLabel(name: string): string {
   return TOOL_LABEL[name] || name.replace(/^(ti_|tpl_|ps_)/, "").replace(/_/g, " ");
 }
 
-/** «Applica col Pianificatore» sotto il piano di un agente che propone soltanto. */
-function ApplicaPiano({ piano, busy, onApplica }: { piano: PianoArgos; busy: boolean; onApplica: () => void }) {
+const TINTA_STATO: Record<StatoProposta, string> = {
+  open: "border-sky-400/40 text-sky-200", accepted: "border-violet-400/40 text-violet-200",
+  applied: "border-emerald-400/40 text-emerald-200", rejected: "border-zinc-500/40 text-zinc-400",
+};
+
+/** «Applica col Pianificatore» sotto il piano di un agente che propone soltanto: il Pianificatore
+ *  lavora QUI, in questa chat (niente chat nuove), e applica solo ciò che è ancora da fare. */
+function ApplicaPiano({ piano, stati, busy, onApplica, motivoNo }: {
+  piano: PianoArgos; stati: ReadonlyMap<number, StatoProposta>; busy: boolean;
+  onApplica?: (p: PianoArgos) => void; motivoNo?: string;
+}) {
   const [conferma, setConferma] = React.useState(false);
-  const n = piano.interventi.length;
-  if (!conferma) {
-    return (
-      <div className="mt-1.5">
+  const resto = ancoraDaFare(piano, stati);
+  const n = resto.interventi.length;
+  const conStato = piano.interventi.some(x => x.id !== null && stati.has(x.id));
+  return (
+    <div className="mt-1.5 space-y-1.5">
+      {conStato && (
+        <ul className="space-y-0.5 text-[11px]" aria-label="Lo stato degli interventi">
+          {piano.interventi.map((x, i) => {
+            const st = x.id !== null ? stati.get(x.id) : undefined;
+            return (
+              <li key={x.id ?? `i${i}`} className="flex items-center gap-1.5 text-zinc-300">
+                <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold ${st ? TINTA_STATO[st] : "border-white/15 text-zinc-400"}`}>
+                  {st ? NOME_STATO[st] : "non salvata"}
+                </span>
+                <span className={st === "applied" || st === "rejected" ? "text-zinc-500 line-through decoration-zinc-600" : ""}>{x.titolo}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {motivoNo ? (
+        <p className="text-[11px] text-zinc-400">{motivoNo}</p>
+      ) : !onApplica ? null : n === 0 ? (
+        <p className="text-[11px] text-emerald-300">Tutti gli interventi sono fatti o scartati.</p>
+      ) : !conferma ? (
         <button type="button" disabled={busy} onClick={() => setConferma(true)}
           className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:opacity-40">
-          <CheckCheck className="h-3.5 w-3.5" aria-hidden />Applica col Pianificatore ({n} {n === 1 ? "intervento" : "interventi"})
+          <CheckCheck className="h-3.5 w-3.5" aria-hidden />Applica col Pianificatore ({n} {n === 1 ? "intervento" : "interventi"}{n < piano.interventi.length ? " da fare" : ""})
         </button>
-      </div>
-    );
-  }
-  return (
-    <div role="alertdialog" aria-label="Applicare il piano col Pianificatore?"
-      className="mt-1.5 max-w-md rounded-lg border border-emerald-400/40 bg-emerald-500/10 p-2.5 text-[11px] text-emerald-100">
-      <p className="leading-snug">
-        Apro una conversazione col <b>Pianificatore</b> sullo stesso progetto: applica {n === 1 ? "l'intervento" : `i ${n} interventi`} in
-        «accetta modifiche» (scrive sull'orario, rilegge dopo ogni scrittura), poi rilancia il giro dell'ottimizzatore e lo
-        confronta con quello di partenza. Gli spostamenti di corse non si annullano col bottone del turno: il resoconto dice come
-        tornare indietro.
-      </p>
-      <div className="mt-2 flex gap-2">
-        <button type="button" disabled={busy} onClick={() => { setConferma(false); onApplica(); }}
-          className="rounded-md bg-emerald-500/80 px-2.5 py-1 font-semibold text-white hover:bg-emerald-500 disabled:opacity-40">Applica</button>
-        <button type="button" onClick={() => setConferma(false)} className="rounded-md border border-white/15 px-2.5 py-1 text-zinc-300 hover:bg-white/10">No</button>
-      </div>
+      ) : (
+        <div role="alertdialog" aria-label="Applicare il piano col Pianificatore?"
+          className="max-w-md rounded-lg border border-emerald-400/40 bg-emerald-500/10 p-2.5 text-[11px] text-emerald-100">
+          <p className="leading-snug">
+            Il <b>Pianificatore</b> lavora qui, in questa chat: applica {n === 1 ? "l'intervento" : `i ${n} interventi`} in
+            «accetta modifiche» (scrive sull'orario, rilegge dopo ogni scrittura), poi rilancia il giro dell'ottimizzatore e lo
+            confronta con quello di partenza. Gli spostamenti di corse non si annullano col bottone del turno: il resoconto dice come
+            tornare indietro.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button type="button" disabled={busy} onClick={() => { setConferma(false); onApplica(resto); }}
+              className="rounded-md bg-emerald-500/80 px-2.5 py-1 font-semibold text-white hover:bg-emerald-500 disabled:opacity-40">Applica</button>
+            <button type="button" onClick={() => setConferma(false)} className="rounded-md border border-white/15 px-2.5 py-1 text-zinc-300 hover:bg-white/10">No</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -713,9 +743,13 @@ function ProposalCard({ p, busy, undone, onStatus, onApply }: {
 
 const PROSE_CLS = "prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]";
 
-function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoing, onAskAnswer, onOther, onRetry, onApplicaPiano }: {
-  /** il piano di un agente che propone: lo passa al Pianificatore (assente: niente bottone) */
+function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoing, onAskAnswer, onOther, onRetry, onApplicaPiano, statiProposte, motivoNoApplica }: {
+  /** il piano di un agente che propone: lo applica il Pianificatore in questa chat (assente: niente bottone) */
   onApplicaPiano?: (p: PianoArgos) => void;
+  /** lo stato delle proposte di questa chat, accanto agli interventi */
+  statiProposte: ReadonlyMap<number, StatoProposta>;
+  /** perché qui non si può applicare (una chat senza progetto) */
+  motivoNoApplica?: string;
   msg: Msg;
   busy: boolean;
   onProposalStatus: (pid: number, status: string, note?: string) => void;
@@ -795,8 +829,9 @@ function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoi
         )}
 
         {/* Il piano di Argos (o di un agente che propone): lo applica il Pianificatore */}
-        {!isUser && !msg.streaming && msg.pianoArgos && onApplicaPiano && (
-          <ApplicaPiano piano={msg.pianoArgos} busy={busy} onApplica={() => onApplicaPiano(msg.pianoArgos!)} />
+        {!isUser && !msg.streaming && msg.pianoArgos && (onApplicaPiano || motivoNoApplica) && (
+          <ApplicaPiano piano={msg.pianoArgos} stati={statiProposte} busy={busy} onApplica={onApplicaPiano}
+            motivoNo={motivoNoApplica} />
         )}
 
         {/* Card del piano emesso in questo turno */}
@@ -869,14 +904,11 @@ export interface OsservatoreTurno {
   fine(esito: "done" | "error" | "aborted", messaggio?: string | null): void;
 }
 
-export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore, onApplicaPiano, primoMessaggio, onPrimoInviato, origineProposte }: {
-  /** il piano di un agente che propone passa al Pianificatore (lo decide chi contiene la chat) */
-  onApplicaPiano?: (p: PianoArgos) => void;
-  /** una conversazione appena nata col suo primo messaggio, che parte da solo in «accetta modifiche» */
-  primoMessaggio?: string;
-  /** le proposte (scheda «Proposte») da cui nasce quel primo messaggio: fatte se il Pianificatore le applica tutte */
-  origineProposte?: number[];
-  onPrimoInviato?: () => void;
+export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore, daInviare, onInviato }: {
+  /** un turno che parte da solo in «accetta modifiche», appena la storia è arrivata (la scheda
+   *  «Proposte», «Parti da questa»): le sue proposte d'origine si segnano in corso, poi fatte */
+  daInviare?: DaInviare;
+  onInviato?: () => void;
   projectId?: string;
   tiConfigured?: boolean;
   argosReady?: boolean;
@@ -1124,8 +1156,48 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     } catch { return null; }
   };
 
+  // le proposte d'origine del turno che applica: a fine turno, fatte se il piano le ha applicate tutte
+  const origineRef = React.useRef<number[] | null>(null);
+  // Lo stato delle proposte di questa chat (scheda «Proposte»): accanto agli interventi del
+  // piano, per vedere che cosa è fatto e applicare solo ciò che resta.
+  const [statiProposte, setStatiProposte] = React.useState<ReadonlyMap<number, StatoProposta>>(() => new Map());
+  const conversazioneRef = React.useRef<string | null>(null);
+  conversazioneRef.current = conversazione?.id ?? null;
+  const caricaStati = React.useCallback(() => {
+    if (!conversazione || conversazione.modo !== "agente") return;
+    const id = conversazione.id;
+    proposteApi.elenco(null, "tutte", id)
+      .then(d => { if (conversazioneRef.current === id) setStatiProposte(new Map(d.proposte.map(p => [p.id, p.status]))); })
+      .catch(() => { /* gli stati sono un di più: la chat resta */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversazione?.id, conversazione?.modo]);
+  React.useEffect(() => {
+    setStatiProposte(new Map());
+    if (conversazione && storiaDi === conversazione.id) caricaStati();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storiaDi, conversazione?.id, caricaStati]);
+
+  // «Applica col Pianificatore» nella chat di Argos (o di un agente che propone): il
+  // Pianificatore fa QUI il suo turno, come ospite, e la proposta resta nella sua chat.
+  const puoApplicareQui = !!conversazione && conversazione.modo === "agente" && !!conversazione.progetto
+    && conversazione.agente !== "pianificatore" && !solaLettura;
+  const motivoNoApplica = conversazione && conversazione.modo === "agente" && conversazione.agente !== "pianificatore"
+    && !conversazione.progetto && !solaLettura
+    ? "Per applicarlo serve un progetto: questa chat non ne ha. Aprine una sul progetto e chiedilo lì." : undefined;
+  /** Il turno che applica: le proposte d'origine passano «in corso», poi (a fine turno) «fatte». */
+  const avviaApplica = (origine: number[], testo: string, ospite: boolean) => {
+    origineRef.current = origine.length ? origine : null;
+    if (origine.length) void Promise.allSettled(origine.map(id => proposteApi.cambia(id, "accepted"))).then(caricaStati);
+    void send(testo, "accetta", undefined, ospite ? { ospite: true } : undefined);
+  };
+  const applicaQui = (piano: PianoArgos) => {
+    if (loading || blocked || !puoApplicareQui) return;
+    avviaApplica(origineDi(piano), promptApplica(piano), true);
+  };
+
   const send = async (textOverride?: string, modeOverride?: AgentMode,
-                      allegatiOverride?: { ids: string[]; meta: AllegatoMessaggio[] }) => {
+                      allegatiOverride?: { ids: string[]; meta: AllegatoMessaggio[] },
+                      opzioni?: { ospite?: boolean }) => {
     if (loading || blocked || allegati.inCaricamento) return;
     const scritto = (textOverride ?? input).trim();
     const prendeFile = !allegatiOverride && !!conversazione && textOverride === undefined;
@@ -1170,8 +1242,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       ? `/api/ai/argos/console/conversazioni/${conversazione.id}/messaggi`
       : t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
     const body = conversazione
-      ? { testo: text, modalita: m === "auto" ? "agente" : m, ...(osservatore ? { traccia: true } : {}),
-          ...(conFile.ids.length ? { allegati: conFile.ids } : {}), ...(conCalcoli && calcoli ? { calcoli: true } : {}) }
+      ? opzioni?.ospite
+        // il Pianificatore applica nella chat di un altro agente: solo «accetta modifiche», senza allegati
+        ? { testo: text, modalita: "accetta", ospite: "pianificatore", ...(osservatore ? { traccia: true } : {}) }
+        : { testo: text, modalita: m === "auto" ? "agente" : m, ...(osservatore ? { traccia: true } : {}),
+            ...(conFile.ids.length ? { allegati: conFile.ids } : {}), ...(conCalcoli && calcoli ? { calcoli: true } : {}) }
       : t === "chat"
         ? { messages: history.slice(-20), projectId, deep }
         : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
@@ -1340,9 +1415,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         const origine = origineRef.current;
         origineRef.current = null;
         const resoconto = planForSave?.proposals ?? [];
-        if (!turnFailed && resoconto.length > 0 && resoconto.every(p => p.status === "applied")) {
-          void Promise.allSettled(origine.map(id => proposteApi.cambia(id, "applied")));
-        }
+        const fatte = !turnFailed && resoconto.length > 0 && resoconto.every(p => p.status === "applied")
+          ? Promise.allSettled(origine.map(id => proposteApi.cambia(id, "applied"))) : Promise.resolve();
+        void fatte.then(caricaStati);
+      } else {
+        caricaStati();
       }
       // Piano e domanda vivono nelle rispettive tabelle/carte; nello storico
       // testuale ne resta una traccia leggibile per i turni successivi.
@@ -1367,21 +1444,18 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     }
   };
 
-  // Una conversazione appena nata col suo primo messaggio (Applica col Pianificatore):
-  // parte da solo, in «accetta modifiche», una volta sola e dopo che la storia è arrivata.
-  const primoFatto = React.useRef<string | null>(null);
-  // le proposte d'origine del primo messaggio: a fine turno, fatte se il piano le ha applicate tutte
-  const origineRef = React.useRef<number[] | null>(null);
+  // Un turno che parte da solo («Parti da questa» dalla scheda Proposte), in «accetta modifiche»,
+  // una volta sola e dopo che la storia è arrivata (altrimenti la storia lo cancellerebbe).
+  const inviato = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!primoMessaggio || !conversazione || storiaDi !== conversazione.id || loading || msgs.length > 0) return;
-    if (primoFatto.current === conversazione.id) return;
-    primoFatto.current = conversazione.id;
-    origineRef.current = origineProposte?.length ? origineProposte : null;
-    setAgentMode("accetta");
-    onPrimoInviato?.();
-    void send(primoMessaggio, "accetta");
+    if (!daInviare || !conversazione || storiaDi !== conversazione.id || loading || blocked) return;
+    if (inviato.current === daInviare.chiave) return;
+    inviato.current = daInviare.chiave;
+    onInviato?.();
+    if (!daInviare.ospite) setAgentMode("accetta");
+    avviaApplica(daInviare.origine, daInviare.testo, daInviare.ospite);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primoMessaggio, conversazione?.id, storiaDi, loading, msgs.length]);
+  }, [daInviare?.chiave, conversazione?.id, storiaDi, loading, blocked]);
 
   const stop = () => { abortRef.current?.abort(); };
 
@@ -1828,7 +1902,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             onAskAnswer={labels => answerAsk(x.id, labels)}
             onOther={() => inputRef.current?.focus()}
             onRetry={t => send(t, undefined, x.retryAllegati)}
-            onApplicaPiano={onApplicaPiano}
+            onApplicaPiano={puoApplicareQui ? applicaQui : undefined}
+            statiProposte={statiProposte}
+            motivoNoApplica={motivoNoApplica}
           />
         ))}
       </div>

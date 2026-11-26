@@ -192,7 +192,25 @@ const GRUPPI_PROPOSTE: Record<string, readonly string[]> = {
   fatte: ["applied"], scartate: ["rejected"],
 };
 
-// GET /api/ai/argos/console/proposte?progetto=<uuid>|senza&gruppo=
+/**
+ * La chat da cui nasce la proposta, se è dell'utente e non è archiviata: lì la si
+ * riapre e lì il Pianificatore la applica (niente chat nuove). Altrimenti null, e
+ * della chat di un altro non esce nulla, nemmeno l'id.
+ */
+function chatDellaProposta(r: any, userId: string): { id: string; titolo: string; agente: string | null } | null {
+  const id = typeof r?.conversazione === "string" && UUID_RE.test(r.conversazione) ? r.conversazione : null;
+  if (!id || String(r?.conversazione_autore ?? "") !== userId || r?.conversazione_archiviata === true) return null;
+  return { id, titolo: String(r?.conversazione_titolo ?? "").slice(0, 200),
+           agente: typeof r?.conversazione_agente === "string" ? r.conversazione_agente : null };
+}
+
+function propostaPerUtente(r: any, userId: string): any {
+  const { conversazione: _c, conversazione_autore: _a, conversazione_titolo: _t, conversazione_agente: _g,
+          conversazione_archiviata: _x, ...resto } = r ?? {};
+  return { ...resto, chat: chatDellaProposta(r, userId) };
+}
+
+// GET /api/ai/argos/console/proposte?progetto=<uuid>|senza&gruppo=&conversazione=<uuid>
 router.get("/ai/argos/console/proposte", async (req, res) => {
   const userId = utenteDi(req);
   if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
@@ -200,19 +218,25 @@ router.get("/ai/argos/console/proposte", async (req, res) => {
   if (!GRUPPI_PROPOSTE[gruppo]) { res.status(400).json({ error: "gruppo non valido" }); return; }
   const p = req.query.progetto === undefined || req.query.progetto === "" ? undefined : String(req.query.progetto);
   if (p !== undefined && p !== "senza" && !UUID_RE.test(p)) { res.status(400).json({ error: "progetto non valido" }); return; }
+  const conv = req.query.conversazione === undefined || req.query.conversazione === "" ? undefined : String(req.query.conversazione);
+  if (conv !== undefined && !UUID_RE.test(conv)) { res.status(400).json({ error: "conversazione non valida" }); return; }
   if (p && p !== "senza") {
     const ok = await accessoAlProgetto(p, userId).catch(() => null);
     if (!ok) { res.status(404).json({ error: "Progetto non trovato o accesso negato" }); return; }
   }
+  // le proposte di una chat: solo della propria (e del suo progetto, se ce l'ha)
+  if (conv !== undefined && (await conversazioneVisibile(res, userId, conv)) === undefined) return;
   // tutte, poi si filtra: i conteggi devono essere quelli delle sole proposte visibili
-  const d = await leggi(res, "/proposte", { progetto: p === "senza" ? undefined : p, gruppo: "tutte", limit: "500" });
+  const d = await leggi(res, "/proposte", { progetto: p === "senza" ? undefined : p, gruppo: "tutte", limit: "500",
+                                            conversazione: conv });
   if (d === undefined) return;
   let righe: any[] = Array.isArray(d?.proposte) ? d.proposte : [];
   if (p === "senza") righe = righe.filter((r) => !r.project_id);
   const accessibili = await progettiAccessibili(righe.map((r) => String(r.project_id || "")).filter(Boolean), userId);
   const visibili = soloVisibili(righe, accessibili);
   const conteggi = Object.fromEntries(STATI_PROPOSTA.map((s) => [s, visibili.filter((r) => r.status === s).length]));
-  res.json({ conteggi, proposte: visibili.filter((r) => GRUPPI_PROPOSTE[gruppo]!.includes(r.status)) });
+  res.json({ conteggi, proposte: visibili.filter((r) => GRUPPI_PROPOSTE[gruppo]!.includes(r.status))
+                                         .map((r) => propostaPerUtente(r, userId)) });
 });
 
 // PATCH /api/ai/argos/console/proposte/:id { stato, nota? } → da fare, in corso, fatta, scartata
@@ -758,6 +782,12 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
   // comunque da qui col token dell'utente: senza scrittura sui turni Cerbero lo rifiuta.
   if (b.calcoli !== undefined && typeof b.calcoli !== "boolean") { res.status(400).json({ error: "calcoli: sì o no" }); return; }
   const calcoli = b.calcoli === true;
+  // «Applica col Pianificatore» nella chat di Argos (o di un agente che propone): il
+  // Pianificatore fa QUI il suo turno, e la proposta resta nella chat da cui è nata.
+  // Solo in «accetta modifiche»: le scritture passano dal token dell'utente, come sempre.
+  if (b.ospite !== undefined && b.ospite !== "pianificatore") { res.status(400).json({ error: "ospite non valido" }); return; }
+  const ospite = b.ospite === "pianificatore";
+  if (ospite && modalita !== "accetta") { res.status(400).json({ error: "il Pianificatore entra solo per applicare («accetta modifiche»)" }); return; }
   const allegati = allegatiDelTurno(b.allegati);
   if (allegati === null) { res.status(400).json({ error: `allegati: al più ${MAX_ALLEGATI_TURNO} allegati validi` }); return; }
   const d = await conversazioneVisibile(res, userId, req.params.id);
@@ -782,7 +812,8 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
     const upstream = await fetch(`${ARGOS_URL}/console/conversazioni/${req.params.id}/messaggi`, {
       method: "POST",
       headers: argosHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ autore: userId, testo, modalita, traccia, allegati, calcoli, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
+      body: JSON.stringify({ autore: userId, testo, modalita, traccia, allegati, calcoli, ...(ospite ? { ospite: "pianificatore" } : {}),
+                             ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
       signal: ctrl.signal,
     });
     if (!upstream.ok || !upstream.body) {

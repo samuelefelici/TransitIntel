@@ -2,7 +2,7 @@
  * La scheda «Proposte»: le proposte di tutti i piani degli agenti, con lo
  * stato di avanzamento, per decidere da quale partire. Qui le parti pure:
  * nomi, ordine, avanzamento, e il piano di una proposta sola da passare al
- * Pianificatore («Parti da questa»).
+ * Pianificatore («Parti da questa»), nella chat da cui la proposta è nata.
  */
 import type { PianoArgos } from "./argos-applica";
 import type { PropostaAgente, StatoProposta } from "./argos-console";
@@ -36,6 +36,18 @@ export function azioni(p: Pick<PropostaAgente, "status" | "project_id">): Array<
     case "accepted": return [...(p.project_id ? ["parti" as const] : []), "fatta", "da_fare", "scarta"];
     default: return ["riapri"];
   }
+}
+
+/** Che cosa fa la scheda Conversazione quando arriva dalla scheda Proposte: apre la chat d'origine,
+ *  oppure applica una proposta (nella sua chat, se è dell'utente; se no, in una chat nuova col
+ *  Pianificatore sul progetto). */
+export type Avvio =
+  | { tipo: "apri"; conversazione: string }
+  | { tipo: "applica"; piano: PianoArgos; progetto: string; chat: { id: string; agente: string | null } | null };
+
+export function avvioDa(p: PropostaAgente): Avvio {
+  return { tipo: "applica", piano: pianoDaProposta(p), progetto: p.project_id,
+           chat: p.chat ? { id: p.chat.id, agente: p.chat.agente } : null };
 }
 
 /** Il piano di una proposta sola, da passare al Pianificatore. */
