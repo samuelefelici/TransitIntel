@@ -663,7 +663,7 @@ router.delete("/ai/argos/console/conversazioni/:id/allegati/:allegato", async (r
   if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
   if (!UUID_RE.test(req.params.allegato)) { res.status(400).json({ error: "allegato non valido" }); return; }
   if ((await conversazioneVisibile(res, userId, req.params.id)) === undefined) return;
-  const d = await scrivi(res, "DELETE", `/conversazioni/${req.params.id}/allegati/${req.params.allegato}`, undefined, { autore: userId });
+  const d = await scrivi(res, "DELETE", `/console/conversazioni/${req.params.id}/allegati/${req.params.allegato}`, undefined, { autore: userId });
   if (d !== undefined) res.json(d);
 });
 

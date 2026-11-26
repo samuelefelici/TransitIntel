@@ -2270,6 +2270,31 @@ Fatto finora:
     `components/argos/AllegatiChat.tsx`, `ArgosConversation.tsx`,
     `lib/argos-console.ts`.
 
+- **La regia: Argos sceglie la squadra da sé (25/11).** L'utente non sceglie
+  più l'agente: la conversazione nuova parte con «Argos» (il regista), che per
+  ogni domanda decide chi serve (Turnista, Officina, Rosterista, Analista,
+  Pianificatore, Risorse umane), affida a ognuno un compito con
+  `delega_agenti` e li fa lavorare **in contemporanea**; poi mette insieme i
+  rapporti, dice dove non tornano e risponde. Quando basta risponde da solo.
+  In chat, sopra la risposta, si vede la squadra: chi lavora, chi ha finito,
+  quanti strumenti, quanto tempo (resta anche nella storia). «Un agente
+  preciso» resta fra le scelte; da Planning Studio la proposta resta il
+  Pianificatore, l'unico che applica.
+  - *Regole*: i delegati leggono soltanto (niente scritture, memoria, piani o
+    domande all'utente, niente deleghe a catena); al più 4 per chiamata e 3
+    chiamate per turno; 7 minuti al massimo per la squadra, poi chi non ha
+    finito consegna ciò che ha. Ognuno lavora con i diritti dell'utente del
+    turno; ogni lavoro è un'esecuzione con la sua traccia nell'Ispettore.
+  - *Dove*: argos `api/regia.py`, `api/esecuzione.py` (avvisi in diretta,
+    metadati), `api/agenti.py` (agente `regista`, skill `regia`),
+    `REGIA_ENABLED`, `REGIA_MAX_AGENTI`, `REGIA_TEMPO_MASSIMO_S`; Cerbero
+    `components/argos/SquadraAlLavoro.tsx`, `lib/argos-squadra.ts`,
+    `argos-console/Conversazioni.tsx` (modulo della conversazione nuova).
+  - *Sistemati*: togliere un allegato dalla chat dava 404 (la rotta di
+    Cerbero chiamava Argos senza `/console`: il file restava nella
+    conversazione); le formule con «€» riempivano la console di avvisi di
+    KaTeX a ogni ridisegno.
+
 ## In sospeso
 
 - **Argos: il connettore MCP** espone solo Planning Studio (più 4 di Argos):

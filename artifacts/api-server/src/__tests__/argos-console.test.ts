@@ -460,7 +460,7 @@ describe("le conversazioni", () => {
     rispondi(200, { allegati: [{ id: "a1" }] });
     let r = await request(app()).get(`/api/ai/argos/console/conversazioni/${CONV}/allegati?autore=altro`);
     expect(r.status).toBe(200);
-    expect(stato.chiamate[1]!.url).toContain(`/conversazioni/${CONV}/allegati?`);
+    expect(stato.chiamate[1]!.url).toContain(`/console/conversazioni/${CONV}/allegati?`);
     expect(stato.chiamate[1]!.url).toContain(`autore=${io}`);
     const AL = "44444444-4444-4444-8444-444444444444";
     rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
@@ -468,7 +468,8 @@ describe("le conversazioni", () => {
     r = await request(app()).delete(`/api/ai/argos/console/conversazioni/${CONV}/allegati/${AL}`);
     expect(r.status).toBe(200);
     expect(stato.chiamate[3]!.init.method).toBe("DELETE");
-    expect(stato.chiamate[3]!.url).toContain(`/allegati/${AL}?`);
+    // l'indirizzo intero: senza /console Argos risponde 404 e il file resta nella conversazione
+    expect(new URL(stato.chiamate[3]!.url).pathname).toBe(`/console/conversazioni/${CONV}/allegati/${AL}`);
     expect((await request(app()).delete(`/api/ai/argos/console/conversazioni/${CONV}/allegati/boh`)).status).toBe(400);
   });
 

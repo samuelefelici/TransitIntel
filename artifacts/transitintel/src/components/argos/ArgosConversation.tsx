@@ -32,6 +32,8 @@ import {
 } from "lucide-react";
 import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
 import { AllegatiMessaggio, BottoneAllega, PilloleAllegati, useAllegati, type AllegatoMessaggio } from "@/components/argos/AllegatiChat";
+import { SquadraAlLavoro } from "@/components/argos/SquadraAlLavoro";
+import { membroDa, squadraDa, unisciSquadra, type MembroSquadra } from "@/lib/argos-squadra";
 import { getApiBase } from "@/lib/api";
 import { annunciaScrittura } from "@/lib/argos-live";
 
@@ -155,6 +157,8 @@ type Msg = {
   note?: string;
   /** Conversazione salvata: il run del piano di questo turno, da rileggere. */
   pianoRunId?: number;
+  /** La regia: gli agenti che Argos ha fatto lavorare insieme in questo turno. */
+  squadra?: MembroSquadra[];
 };
 
 type ArgosTab = "chat" | "agente";
@@ -237,6 +241,7 @@ const KIND_LABEL: Record<string, string> = {
 
 /** Etichette leggibili per i chip degli strumenti in lettura. */
 const TOOL_LABEL: Record<string, string> = {
+  delega_agenti: "squadra al lavoro",
   ti_project_context: "contesto progetto",
   ti_project_health: "salute progetto",
   ti_validity_coverage: "copertura validità",
@@ -697,6 +702,8 @@ function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoi
         {isUser ? <User className="w-3.5 h-3.5 text-zinc-400" /> : <Eye className="w-3.5 h-3.5 text-violet-300" />}
       </div>
       <div className={`flex-1 min-w-0 ${isUser ? "text-right" : ""}`}>
+        {/* La regia: gli agenti che Argos fa lavorare insieme */}
+        {!isUser && msg.squadra && msg.squadra.length > 0 && <SquadraAlLavoro squadra={msg.squadra} />}
         {/* Attività strumenti: cosa sta leggendo, in tempo reale */}
         {!isUser && tools.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-1.5">
@@ -943,6 +950,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             id: `c${m.seq}`, role: m.ruolo === "assistant" ? "assistant" : "user", content,
             ...(meta.domanda && m.ruolo === "assistant" ? { ask: { ...meta.domanda, answered: [] } } : {}),
             ...(meta.piano_run_id ? { pianoRunId: Number(meta.piano_run_id) } : {}),
+            ...(m.ruolo === "assistant" && Array.isArray(meta.squadra) && meta.squadra.length
+              ? { squadra: squadraDa(meta.squadra) } : {}),
             ...(m.ruolo === "user" && Array.isArray(meta.allegati) && meta.allegati.length
               ? { allegati: meta.allegati.map((a: any) => ({ nome: String(a?.nome ?? "file"), formato: String(a?.formato ?? ""), byte: Number(a?.byte) || 0,
                                                              ...(a?.biblioteca === true ? { biblioteca: true } : {}) })) }
@@ -1166,6 +1175,10 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             patchLast(x => ({ ...x, content: "" }));
           } else if (typeof payload.note === "string") {
             patchLast(x => ({ ...x, note: payload.note }));
+          } else if (payload.squadra) {
+            // la regia: chi della squadra lavora, chi ha finito (un avviso per volta)
+            const membro = membroDa(payload.squadra);
+            if (membro) patchLast(x => ({ ...x, squadra: unisciSquadra(x.squadra, membro) }));
           } else if (payload.tool && typeof payload.tool.name === "string") {
             patchLast(x => ({
               ...x,
