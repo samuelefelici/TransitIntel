@@ -23,6 +23,7 @@ import {
   type Conversazione, type ModoConversazione,
 } from "@/lib/argos-console";
 import type { OsservatoreTurno } from "@/components/argos/ArgosConversation";
+import { promptApplica, titoloApplica, type PianoArgos } from "@/lib/argos-applica";
 import { Caricamento, Pill, Problema, Vuoto } from "./comuni";
 import { StudioNeurale } from "./StudioNeurale";
 
@@ -59,6 +60,8 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
   const [nuova, setNuova] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
   const [lavoro, setLavoro] = useState<string | null>(null);
+  // «Applica col Pianificatore»: la conversazione nuova e il messaggio che parte da solo
+  const [inizio, setInizio] = useState<{ conv: string; testo: string } | null>(null);
   // l'elenco si richiude in una striscia: lo schermo va allo studio (ricordato nel browser)
   const [elencoChiuso, setElencoChiuso] = useState(leggiElencoChiuso);
   useEffect(() => { try { localStorage.setItem(CHIAVE_ELENCO, elencoChiuso ? "1" : "0"); } catch { /* storage spento */ } }, [elencoChiuso]);
@@ -250,6 +253,14 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
               if (await esegui("elimina", () => conversazioni.elimina(conv.id))) { aggiorna(); setAperta(null); }
             }}
             onTurnoFinito={aggiorna}
+            onApplicaPiano={conv.progetto && !conv.archiviata && conv.agente !== "pianificatore" ? async piano => {
+              const d = await esegui("crea", () => conversazioni.crea({
+                modo: "agente", agente: "pianificatore", progetto: conv.progetto, titolo: titoloApplica(piano),
+              }));
+              if (d) { setInizio({ conv: d.conversazione.id, testo: promptApplica(piano) }); aggiorna(); setAperta(d.conversazione.id); }
+            } : undefined}
+            primoMessaggio={inizio?.conv === conv.id ? inizio.testo : undefined}
+            onPrimoInviato={() => setInizio(null)}
           />
         )}
       </section>
@@ -342,7 +353,10 @@ function NuovaConversazione({ progettoIniziale, progetti, agenti, inCorso, annul
   );
 }
 
-function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPronto, tiConfigured, rinomina, archivia, elimina, onTurnoFinito }: {
+function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPronto, tiConfigured, rinomina, archivia, elimina, onTurnoFinito, onApplicaPiano, primoMessaggio, onPrimoInviato }: {
+  onApplicaPiano?: (piano: PianoArgos) => void;
+  primoMessaggio?: string;
+  onPrimoInviato?: () => void;
   conv: Conversazione;
   nomeAgente: string | null;
   nomeProgetto: string | null;
@@ -414,6 +428,9 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
               argosReady={argosPronto}
               tiConfigured={tiConfigured}
               onTurnoFinito={onTurnoFinito}
+              onApplicaPiano={onApplicaPiano}
+              primoMessaggio={primoMessaggio}
+              onPrimoInviato={onPrimoInviato}
               solaLettura={conv.archiviata ? "Archiviata: ripristinala per continuare" : undefined}
               osservatore={conv.archiviata ? undefined : osservatore}
             />

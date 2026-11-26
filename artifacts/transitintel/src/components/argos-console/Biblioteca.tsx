@@ -208,8 +208,14 @@ function Fasi({ job }: { job: Job }) {
   );
 }
 
-function RigaJob({ job, admin, riprova }: { job: Job; admin: boolean; riprova: (id: number) => void }) {
+function RigaJob({ job, admin, riprova, elimina }: {
+  job: Job; admin: boolean; riprova: (id: number) => void; elimina: (id: number) => void;
+}) {
   const fase = FASI_CARICAMENTO[faseCaricamento(job)];
+  const [conferma, setConferma] = useState(false);
+  const finito = job.status === "error" || job.status === "done";
+  // fatto e non «già presente»: con il caricamento se ne va anche il documento che ha creato
+  const conDocumento = job.status === "done" && !(job.stage ?? "").startsWith("già presente");
   const embedding = job.status === "running" && (job.stage ?? "").startsWith("embedding");
   return (
     <li className="rounded-lg border border-border px-3 py-2.5">
@@ -228,12 +234,34 @@ function RigaJob({ job, admin, riprova }: { job: Job; admin: boolean; riprova: (
       <div className="mt-2"><Fasi job={job} /></div>
       <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <span>{fase.charAt(0).toUpperCase() + fase.slice(1)}{embedding ? ` · ${job.progress}% dei passaggi` : ""}</span>
-        {job.status === "error" && admin && (
-          <button type="button" onClick={() => riprova(job.id)} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-muted">
-            <RotateCcw className="h-3 w-3" aria-hidden />Riprova
-          </button>
+        {admin && finito && (
+          <span className="inline-flex items-center gap-1">
+            {job.status === "error" && (
+              <button type="button" onClick={() => riprova(job.id)} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-muted">
+                <RotateCcw className="h-3 w-3" aria-hidden />Riprova
+              </button>
+            )}
+            {!conferma && (
+              <button type="button" onClick={() => setConferma(true)} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-foreground hover:bg-muted"
+                title={conDocumento ? "Elimina il caricamento e il documento che ha messo nella Biblioteca" : "Elimina il caricamento e il suo file"}>
+                <Trash2 className="h-3 w-3" aria-hidden />Elimina
+              </button>
+            )}
+          </span>
         )}
       </div>
+      {conferma && (
+        <div role="alertdialog" aria-label={`Eliminare ${job.title || job.filename || "il caricamento"}?`}
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-[11px]" data-tinta="avviso">
+          <span className="min-w-0 flex-1">
+            {conDocumento
+              ? <>Elimino il caricamento <b>e il documento</b> che ha messo nella Biblioteca{job.total_chunks ? ` (${job.total_chunks} passaggi)` : ""}?</>
+              : <>Elimino il caricamento e il suo file? I documenti della Biblioteca restano.</>}
+          </span>
+          <button type="button" onClick={() => { setConferma(false); elimina(job.id); }} className="rounded-md px-2 py-1 font-semibold text-white" style={{ background: "hsl(var(--tinta))" }}>Elimina</button>
+          <button type="button" onClick={() => setConferma(false)} className="rounded-md border border-border px-2 py-1">No</button>
+        </div>
+      )}
       {embedding && (
         <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted" data-tinta="info">
           <div className="argos-barra h-full transition-[width] duration-700" style={{ width: `${job.progress}%` }} />
@@ -403,6 +431,7 @@ export default function Biblioteca({ admin, apriInMappa, documentoIniziale }: { 
 
   const aggiorna = useCallback(() => { void qc.invalidateQueries({ queryKey: CHIAVE }); }, [qc]);
   const riprova = useMutation({ mutationFn: biblioteca.riprova, onSuccess: aggiorna });
+  const eliminaCaricamento = useMutation({ mutationFn: biblioteca.eliminaCaricamento, onSuccess: aggiorna });
   const riprovaTutti = useMutation({ mutationFn: biblioteca.riprovaErrori, onSuccess: aggiorna });
   const concetti = useMutation({ mutationFn: biblioteca.estraiConcetti, onSuccess: aggiorna });
   const cervello = useMutation({ mutationFn: biblioteca.costruisciCervello, onSuccess: aggiorna });
@@ -485,10 +514,12 @@ export default function Biblioteca({ admin, apriInMappa, documentoIniziale }: { 
           </ol>
           {jobs.isLoading ? <Caricamento /> : jobs.error ? <Problema errore={jobs.error} /> : lista.length ? (
             <ul className="max-h-[30rem] space-y-2 overflow-auto pr-1">
-              {lista.map(j => <RigaJob key={j.id} job={j} admin={admin} riprova={id => riprova.mutate(id)} />)}
+              {lista.map(j => <RigaJob key={j.id} job={j} admin={admin} riprova={id => riprova.mutate(id)}
+                                       elimina={id => eliminaCaricamento.mutate(id)} />)}
             </ul>
           ) : <Vuoto>Nessun caricamento ancora.</Vuoto>}
           {riprova.error && <div className="mt-2"><Problema errore={riprova.error} /></div>}
+          {eliminaCaricamento.error && <div className="mt-2"><Problema errore={eliminaCaricamento.error} /></div>}
         </Riquadro>
       </div>
 

@@ -362,6 +362,15 @@ router.post("/ai/argos/console/biblioteca/caricamenti/:id/riprova", async (req, 
   if (d !== undefined) res.json(d);
 });
 
+// DELETE /api/ai/argos/console/biblioteca/caricamenti/:id → un caricamento non riuscito (o
+// sbagliato) se ne va: in errore il job e il suo file; fatto, anche il documento che ha creato.
+router.delete("/ai/argos/console/biblioteca/caricamenti/:id", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  const d = await scrivi(res, "DELETE", `/console/biblioteca/caricamenti/${req.params.id}`);
+  if (d !== undefined) res.json(d);
+});
+
 router.patch("/ai/argos/console/biblioteca/documenti/:id", async (req, res) => {
   if (!soloAdmin(req, res)) return;
   if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }

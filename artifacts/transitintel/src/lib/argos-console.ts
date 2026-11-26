@@ -451,6 +451,7 @@ export const biblioteca = {
   categoria: (id: number, category: string | null) => invia(`PATCH`, `${BASE}/biblioteca/documenti/${id}`, { category }),
   elimina: (id: number) => invia(`DELETE`, `${BASE}/biblioteca/documenti/${id}`),
   riprova: (id: number) => invia(`POST`, `${BASE}/biblioteca/caricamenti/${id}/riprova`),
+  eliminaCaricamento: (id: number) => invia<{ ok: boolean; documento_eliminato: number | null }>(`DELETE`, `${BASE}/biblioteca/caricamenti/${id}`),
   riprovaErrori: () => invia(`POST`, `${BASE}/biblioteca/caricamenti/riprova-errori`),
   nuovaCategoria: (name: string) => invia(`POST`, `${BASE}/biblioteca/categorie`, { name }),
   estraiConcetti: () => invia<StatoCostruzione>(`POST`, `${BASE}/biblioteca/concetti`),

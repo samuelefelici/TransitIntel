@@ -64,10 +64,10 @@ export function SquadraAlLavoro({ squadra }: { squadra: MembroSquadra[] }) {
 export function BottoneCalcoli({ acceso, onCambia, disabled }: { acceso: boolean; onCambia: (v: boolean) => void; disabled?: boolean }) {
   return (
     <button type="button" disabled={disabled} onClick={() => onCambia(!acceso)} aria-pressed={acceso}
-      aria-label={acceso ? "Calcoli accesi: la squadra può lanciare i giri dell'ottimizzatore" : "Calcoli spenti"}
+      aria-label={acceso ? "Calcoli accesi: Argos può lanciare i giri dell'ottimizzatore e importare i turni in vigore" : "Calcoli spenti"}
       title={acceso
-        ? "Calcoli accesi: in questi turni il Turnista può lanciare un giro dell'ottimizzatore (turni macchina e guida con la sonda). Dura minuti, salva uno scenario nuovo, l'orario non si tocca. Clicca per spegnere."
-        : "Calcoli spenti: la squadra lavora sui giri e sugli scenari già fatti. Clicca per permetterle di lanciare un giro dell'ottimizzatore (dura minuti, salva uno scenario nuovo, l'orario non si tocca)."}
+        ? "Calcoli accesi: in questi turni Argos può lanciare un giro dell'ottimizzatore (turni macchina e guida con la sonda) e importare i turni in vigore da un export BDROP allegato. Salvano uno scenario nuovo, l'orario non si tocca. Clicca per spegnere."
+        : "Calcoli spenti: Argos lavora sui giri e sugli scenari già fatti. Clicca per permettergli di lanciare un giro dell'ottimizzatore o di importare i turni in vigore da un export allegato (salvano uno scenario nuovo, l'orario non si tocca)."}
       className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition disabled:opacity-40 ${
         acceso ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200" : "border-violet-400/25 bg-zinc-900/80 text-zinc-500 hover:border-violet-400/60 hover:text-violet-300"}`}>
       <Cpu className="h-4 w-4" />
