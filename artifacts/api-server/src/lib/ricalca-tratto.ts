@@ -33,6 +33,7 @@ export interface TracciatoCandidato {
   variantId: string;
   linea: string;        // nome breve della linea, per dire all'operatore da dove viene
   percorso: string;     // nome della variante
+  codice?: string | null; // codice della variante (es. "8A"), se c'è
   coordinate: PuntoLonLat[];
 }
 
@@ -45,6 +46,7 @@ export interface Ricalco {
   variantId: string;
   linea: string;
   percorso: string;
+  codice: string | null;
 }
 
 const lunghezza = (p: PuntoLonLat[]): number => {
@@ -118,23 +120,45 @@ export function ritaglia(
   return migliore;
 }
 
-/** Fra tutti i tracciati, il ricalco più corto del tratto A→B; null se nessuno lo copre. */
+function comeRicalco(c: TracciatoCandidato, r: { punti: PuntoLonLat[]; metri: number }): Ricalco {
+  let tol = SEMPLIFICA_M;
+  let semplici = semplifica(r.punti, tol);
+  while (semplici.length - 2 > MAX_PUNTI_INTERMEDI) { tol *= 2; semplici = semplifica(r.punti, tol); }
+  return {
+    punti: semplici, intermedi: semplici.slice(1, -1), metri: r.metri,
+    variantId: c.variantId, linea: c.linea, percorso: c.percorso, codice: c.codice ?? null,
+  };
+}
+
+/** Il ricalco del tratto A→B: dal più corto fra tutti i tracciati, oppure
+ *  SOLO dalla variante indicata ('preferita' = id della variante) quando
+ *  l'operatore ha scelto lui da quale linea copiare. null se non lo copre. */
 export function ricalcaTratto(
   candidati: TracciatoCandidato[], a: PuntoLonLat, b: PuntoLonLat,
+  opzioni?: { preferita?: string | null },
 ): Ricalco | null {
-  let migliore: Ricalco | null = null;
+  const scelti = opzioni?.preferita ? candidati.filter(c => c.variantId === opzioni.preferita) : candidati;
+  let migliore: { c: TracciatoCandidato; r: { punti: PuntoLonLat[]; metri: number } } | null = null;
+  for (const c of scelti) {
+    const r = ritaglia(c.coordinate, a, b);
+    if (!r || (migliore && r.metri >= migliore.r.metri)) continue;
+    migliore = { c, r };
+  }
+  return migliore ? comeRicalco(migliore.c, migliore.r) : null;
+}
+
+/** Tutte le linee che fanno il tratto A→B, dalla più corta: per far scegliere
+ *  all'operatore da quale copiare. Una riga per variante. */
+export function elencaRicalchi(
+  candidati: TracciatoCandidato[], a: PuntoLonLat, b: PuntoLonLat, max = 8,
+): Ricalco[] {
+  const trovati: { c: TracciatoCandidato; r: { punti: PuntoLonLat[]; metri: number } }[] = [];
   for (const c of candidati) {
     const r = ritaglia(c.coordinate, a, b);
-    if (!r || (migliore && r.metri >= migliore.metri)) continue;
-    let tol = SEMPLIFICA_M;
-    let semplici = semplifica(r.punti, tol);
-    while (semplici.length - 2 > MAX_PUNTI_INTERMEDI) { tol *= 2; semplici = semplifica(r.punti, tol); }
-    migliore = {
-      punti: semplici, intermedi: semplici.slice(1, -1), metri: r.metri,
-      variantId: c.variantId, linea: c.linea, percorso: c.percorso,
-    };
+    if (r) trovati.push({ c, r });
   }
-  return migliore;
+  trovati.sort((x, y) => x.r.metri - y.r.metri);
+  return trovati.slice(0, Math.max(0, max)).map(t => comeRicalco(t.c, t.r));
 }
 
 /** Le coordinate di un LineString salvato, solo se tutte numeriche e plausibili. */
