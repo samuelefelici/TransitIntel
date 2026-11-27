@@ -87,6 +87,13 @@ describe("riepiloga", () => {
     expect(r.medianaM).toBeGreaterThan(9);
   });
 
+  it("tutte già sul simbolo: lo dice, niente «sparso» con mediana zero", () => {
+    const r = riepiloga(6, [ab(0, 0), ab(1, 0), ab(0, -2), ab(0.5, 0.5), ab(-1, 1), ab(0, 0)]);
+    expect(r.giaCentrate).toBe(6);
+    expect(r.nota).toMatch(/Tutte sul simbolo/);
+    expect(r.nota).not.toMatch(/SPARSO|SISTEMATICO/);
+  });
+
   it("con poche fermate non si dichiara sistematico", () => {
     expect(riepiloga(3, [ab(10, 4), ab(10, 4), ab(10, 4)]).sistematico).toBe(false);
   });

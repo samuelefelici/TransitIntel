@@ -116,7 +116,9 @@ export function riepiloga(controllate: number, abb: (Abbinamento | null)[]): Rie
   const giaCentrate = ok.filter(a => a.distanzaM <= GIA_CENTRATA_M).length;
   const nota = ok.length === 0
     ? "Nessuna fermata della mappa vicino a queste fermate: allarga il raggio o controlla che la zona abbia fermate disegnate."
-    : sistematico
+    : giaCentrate === ok.length
+      ? `Tutte sul simbolo della mappa (entro ${GIA_CENTRATA_M} m): niente da spostare.`
+      : sistematico
       ? `Scarto SISTEMATICO: in media ${medio!.m.toFixed(1)} m verso ${medio!.direzione}. Sembra un errore di conversione delle coordinate a monte: si corregge in blocco.`
       : `Scarto SPARSO (mediana ${mediana!.toFixed(1)} m, direzioni diverse): posizioni rilevate fermata per fermata, da vedere caso per caso.`;
   return {

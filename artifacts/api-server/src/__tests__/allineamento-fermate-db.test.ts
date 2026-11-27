@@ -190,6 +190,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le fermate rispetto alla cartog
     expect((await fermate())[AMBIGUA]).toEqual([lat, lon]);
   });
 
+  it("i tracciati toccati si contano una volta, non una per fermata", async () => {
+    // Stamira e la fermata senza simbolo stanno su entrambi i percorsi: 4 aggiornamenti, 2 tracciati
+    const r = await pian.post(`/api/planning-studio/projects/${P}/stops/allinea`).send({ spostamenti: [
+      { stopId: STAMIRA, lat: POS[STAMIRA][0] + aNord(2), lon: POS[STAMIRA][1] },
+      { stopId: VUOTA, lat: POS[VUOTA][0] + aNord(2), lon: POS[VUOTA][1] },
+    ] });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.spostate).toHaveLength(2);
+    expect(r.body.tracciatiAggiornati).toBe(2);
+  });
+
   it("richieste storte: 400 senza toccare niente", async () => {
     const url = `/api/planning-studio/projects/${P}/stops/allinea`;
     expect((await pian.post(url).send({ spostamenti: [] })).status).toBe(400);

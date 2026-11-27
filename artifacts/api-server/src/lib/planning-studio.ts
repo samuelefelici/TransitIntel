@@ -1048,7 +1048,7 @@ router.post("/planning-studio/projects/:id/stops/allinea", async (req, res): Pro
   if (destinazione.size === 0) { res.json({ spostate: [], saltate, tracciatiAggiornati: 0 }); return; }
 
   const spostate: any[] = [];
-  let tracciatiAggiornati = 0;
+  const tracciati = new Set<string>(); // i percorsi diversi toccati, non uno per fermata
   await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
     for (const [stopId, d] of destinazione) {
       const f = attuale.get(stopId)!;
@@ -1072,7 +1072,7 @@ router.post("/planning-studio/projects/:id/stops/allinea", async (req, res): Pro
            AND s.waypoints @> ${JSON.stringify([{ stopId }])}::jsonb
         RETURNING s.variant_id
       `);
-      tracciatiAggiornati += ((u as any).rows ?? (u as any) ?? []).length;
+      for (const r of ((u as any).rows ?? (u as any) ?? [])) tracciati.add(String(r.variant_id));
       const v = vettore(f.lat, f.lon, d.lat, d.lon);
       spostate.push({
         stopId, nome: f.nome, da: { lat: f.lat, lon: f.lon }, a: { lat: d.lat, lon: d.lon },
@@ -1083,7 +1083,7 @@ router.post("/planning-studio/projects/:id/stops/allinea", async (req, res): Pro
   await logActivity(proj.id, req.user!.id, "ps.stop.allinea", {
     payload: { spostate: spostate.map(s => ({ stopId: s.stopId, da: s.da, a: s.a, metri: s.metri, scelta: s.scelta })), saltate: saltate.length },
   });
-  res.json({ spostate, saltate, tracciatiAggiornati });
+  res.json({ spostate, saltate, tracciatiAggiornati: tracciati.size });
 });
 
 router.patch("/planning-studio/projects/:id/stops/:stopId", async (req, res): Promise<void> => {
