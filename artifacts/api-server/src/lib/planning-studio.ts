@@ -33,6 +33,10 @@ import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop
 import { normalizzaWaypoints } from "./waypoints-tracciato";
 import { ricalcaTratto, elencaRicalchi, coordinateValide, type TracciatoCandidato } from "./ricalca-tratto";
 import { erroreLeggibile } from "../middlewares/errori-interni";
+import {
+  verificaAllineamento, raggioValido, senzaToken, vettore, MAX_FERMATE, SPOSTAMENTO_MAX_M,
+  type EsitoFermata, type FermataProgetto,
+} from "./allineamento-fermate";
 
 /* ════════════════════════════════════════════════════════════
  *  Helpers
@@ -848,6 +852,238 @@ router.post("/planning-studio/projects/:id/stops/bulk", async (req, res): Promis
   }));
   await logActivity(proj.id, req.user!.id, "ps.stop.bulk", { payload: { inserted } });
   res.json({ inserted });
+});
+
+/* ── Le fermate rispetto alla cartografia ─────────────────────────────────
+ * Le fermate importate non sempre cadono sul simbolo disegnato sulla mappa
+ * (Mapbox Streets v8, la stessa dell'editor). Qui si misura lo scarto e, solo
+ * su richiesta esplicita di chi può scrivere, si spostano sul simbolo.
+ * Calcolo e regole in lib/allineamento-fermate.ts. */
+
+async function recuperaMapbox(url: string): Promise<unknown> {
+  const r = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) throw new Error(`Mapbox ha risposto ${r.status}`);
+  return r.json();
+}
+
+const rigaFermata = (x: any): FermataProgetto => ({
+  id: String(x.id), codice: x.codice != null ? String(x.codice) : (x.code != null ? String(x.code) : null),
+  nome: String(x.name ?? ""), lat: Number(x.lat), lon: Number(x.lon),
+});
+
+/** Le fermate da controllare: quelle di una variante (nell'ordine di
+ *  percorrenza, ognuna una volta) oppure un elenco di id. Mai tutto il
+ *  progetto: ogni fermata è una chiamata a Mapbox. */
+async function fermateDaControllare(
+  projectId: string, b: any,
+): Promise<{ fermate: FermataProgetto[] } | { status: number; errore: string; mancanti?: string[] }> {
+  const variantId = typeof b.variantId === "string" && UUID_RE.test(b.variantId) ? b.variantId : null;
+  const ids: string[] = Array.isArray(b.stopIds) ? b.stopIds.map((x: any) => String(x)) : [];
+  if (b.variantId != null && !variantId) return { status: 400, errore: "variantId non valido" };
+  if (ids.some(x => !UUID_RE.test(x))) return { status: 400, errore: "stopIds: solo id di fermate (uuid)" };
+  if (!variantId && ids.length === 0) return { status: 400, errore: "indica variantId (le fermate di un percorso) oppure stopIds" };
+  let righe: any[] = [];
+  if (variantId) {
+    if (!(await childInProject("ps_route_variants", variantId, projectId))) {
+      return { status: 404, errore: "Percorso non trovato in questo progetto" };
+    }
+    const r = await db.execute(sql`
+      SELECT s.id, s.codice, s.code, s.name, s.lat, s.lon
+        FROM ps_variant_stops vs
+        JOIN ps_stops s ON s.id = vs.stop_id AND s.project_id = ${projectId}::uuid
+       WHERE vs.variant_id = ${variantId}::uuid
+       ORDER BY vs.seq
+    `);
+    righe = (r as any).rows ?? (r as any) ?? [];
+  }
+  const unici = [...new Set(ids)];
+  if (unici.length > 0) {
+    if (unici.length > MAX_FERMATE) return { status: 400, errore: `massimo ${MAX_FERMATE} fermate per controllo` };
+    const r = await db.execute(sql`
+      SELECT id, codice, code, name, lat, lon FROM ps_stops
+       WHERE project_id = ${projectId}::uuid AND id = ANY(${`{${unici.join(",")}}`}::uuid[])
+    `);
+    const trovate: any[] = (r as any).rows ?? (r as any) ?? [];
+    const presenti = new Set(trovate.map(t => String(t.id)));
+    const mancanti = unici.filter(x => !presenti.has(x));
+    if (mancanti.length) return { status: 404, errore: "fermate non di questo progetto", mancanti: mancanti.slice(0, 10) };
+    const perId = new Map(trovate.map(t => [String(t.id), t]));
+    righe = righe.concat(unici.map(x => perId.get(x)));
+  }
+  const viste = new Set<string>();
+  const fermate: FermataProgetto[] = [];
+  for (const x of righe) {
+    const f = rigaFermata(x);
+    if (viste.has(f.id) || !Number.isFinite(f.lat) || !Number.isFinite(f.lon)) continue;
+    viste.add(f.id);
+    fermate.push(f);
+  }
+  if (fermate.length > MAX_FERMATE) return { status: 400, errore: `massimo ${MAX_FERMATE} fermate per controllo` };
+  return { fermate };
+}
+
+const arrotonda = (n: number, d = 1) => Math.round(n * 10 ** d) / 10 ** d;
+function esitoLeggibile(e: EsitoFermata) {
+  const a = e.abbinamento;
+  return {
+    stopId: e.stopId, codice: e.codice, nome: e.nome, lat: e.lat, lon: e.lon, esito: e.esito,
+    ...(a ? {
+      mappa: { lat: a.mappa.lat, lon: a.mappa.lon, nome: a.mappa.nome },
+      scartoM: arrotonda(a.distanzaM), direzione: a.direzione, gradi: Math.round(a.gradi),
+      estM: arrotonda(a.estM), nordM: arrotonda(a.nordM),
+      alternativa: a.alternativa
+        ? { lat: a.alternativa.lat, lon: a.alternativa.lon, nome: a.alternativa.nome, scartoM: arrotonda(a.alternativa.distanzaM) }
+        : null,
+    } : {}),
+    ...(e.errore ? { errore: e.errore } : {}),
+  };
+}
+
+/** POST /planning-studio/projects/:id/stops/allineamento
+ *  body: { variantId?: uuid, stopIds?: uuid[], raggioM?: 10–80 (default 40) }
+ *  Per ogni fermata la fermata bus della mappa più vicina entro il raggio, lo
+ *  scarto in metri e la direzione; il riepilogo dice se lo scarto è
+ *  sistematico (conversione a monte) o sparso (posizioni rilevate male).
+ *  Sola lettura: basta poter aprire il progetto. */
+router.post("/planning-studio/projects/:id/stops/allineamento", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  const token = process.env.MAPBOX_ACCESS_TOKEN || "";
+  if (!token) {
+    res.status(503).json({ error: "Cartografia non configurata", detail: "MAPBOX_ACCESS_TOKEN non impostato sul server" }); return;
+  }
+  const b = req.body || {};
+  const sel = await fermateDaControllare(proj.id, b);
+  if ("errore" in sel) { res.status(sel.status).json({ error: sel.errore, ...(sel.mancanti ? { mancanti: sel.mancanti } : {}) }); return; }
+  const raggioM = raggioValido(b.raggioM);
+  try {
+    const { fermate, riepilogo } = await verificaAllineamento(sel.fermate, raggioM, token, recuperaMapbox);
+    res.json({
+      fonte: "Mapbox Streets v8, fermate bus (transit_stop_label): la cartografia della mappa dell'editor",
+      raggioM,
+      riepilogo: {
+        ...riepilogo,
+        medianaM: riepilogo.medianaM != null ? arrotonda(riepilogo.medianaM) : null,
+        massimoM: riepilogo.massimoM != null ? arrotonda(riepilogo.massimoM) : null,
+        medio: riepilogo.medio
+          ? { estM: arrotonda(riepilogo.medio.estM), nordM: arrotonda(riepilogo.medio.nordM), m: arrotonda(riepilogo.medio.m), direzione: riepilogo.medio.direzione }
+          : null,
+        daSpostare: fermate.filter(f => f.esito === "da_spostare").length,
+        senzaFermataSullaMappa: fermate.filter(f => f.esito === "nessuna_sulla_mappa").length,
+        errori: fermate.filter(f => f.esito === "errore").length,
+      },
+      fermate: fermate.map(esitoLeggibile),
+    });
+  } catch (e: any) {
+    res.status(502).json({ error: senzaToken(String(e?.message ?? e)).slice(0, 300) });
+  }
+});
+
+/** POST /planning-studio/projects/:id/stops/allinea
+ *  body: { spostamenti: [{ stopId, lat?, lon? }], raggioM? }
+ *  Sposta le fermate sul simbolo della mappa. Senza lat/lon la posizione la
+ *  ricalcola il server dalla cartografia (le ambigue e quelle senza simbolo si
+ *  saltano, e si dice perché); con lat/lon è l'operatore che sceglie (es. la
+ *  seconda candidata), ma mai oltre SPOSTAMENTO_MAX_M dalla posizione di ora.
+ *  Tutto in una transazione; i punti dei tracciati agganciati alla fermata
+ *  seguono la fermata, il disegno della linea resta finché non lo si rifà. */
+router.post("/planning-studio/projects/:id/stops/allinea", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const b = req.body || {};
+  const lista: any[] = Array.isArray(b.spostamenti) ? b.spostamenti : [];
+  if (lista.length === 0) { res.status(400).json({ error: "spostamenti: almeno una fermata" }); return; }
+  if (lista.length > MAX_FERMATE) { res.status(400).json({ error: `massimo ${MAX_FERMATE} fermate per volta` }); return; }
+  const richieste: { stopId: string; lat: number | null; lon: number | null }[] = [];
+  for (const x of lista) {
+    const stopId = String(x?.stopId ?? "");
+    if (!UUID_RE.test(stopId)) { res.status(400).json({ error: "stopId non valido" }); return; }
+    const haLat = x?.lat !== undefined && x?.lat !== null, haLon = x?.lon !== undefined && x?.lon !== null;
+    if (haLat !== haLon) { res.status(400).json({ error: `fermata ${stopId}: lat e lon vanno insieme` }); return; }
+    const lat = haLat ? Number(x.lat) : null, lon = haLon ? Number(x.lon) : null;
+    if (haLat && (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat!) > 90 || Math.abs(lon!) > 180)) {
+      res.status(400).json({ error: `fermata ${stopId}: coordinate non valide` }); return;
+    }
+    if (richieste.some(r => r.stopId === stopId)) { res.status(400).json({ error: `fermata ${stopId} ripetuta` }); return; }
+    richieste.push({ stopId, lat, lon });
+  }
+  const sel = await fermateDaControllare(proj.id, { stopIds: richieste.map(r => r.stopId) });
+  if ("errore" in sel) { res.status(sel.status).json({ error: sel.errore, ...(sel.mancanti ? { mancanti: sel.mancanti } : {}) }); return; }
+  const attuale = new Map(sel.fermate.map(f => [f.id, f]));
+
+  // le posizioni scelte a mano: tutte dentro il tetto, o non si tocca niente
+  const troppo = richieste.filter(r => r.lat != null).map(r => {
+    const f = attuale.get(r.stopId)!;
+    const v = vettore(f.lat, f.lon, r.lat!, r.lon!);
+    return { stopId: r.stopId, nome: f.nome, metri: Math.hypot(v.estM, v.nordM) };
+  }).filter(x => x.metri > SPOSTAMENTO_MAX_M);
+  if (troppo.length) {
+    res.status(400).json({
+      error: `oltre ${SPOSTAMENTO_MAX_M} m non è un centraggio: nessuna fermata spostata`,
+      fermate: troppo.map(t => ({ ...t, metri: arrotonda(t.metri) })),
+    }); return;
+  }
+
+  // le posizioni dalla cartografia, per quelle senza lat/lon
+  const daMappa = richieste.filter(r => r.lat == null).map(r => attuale.get(r.stopId)!);
+  const saltate: { stopId: string; nome: string; motivo: string }[] = [];
+  const destinazione = new Map<string, { lat: number; lon: number; da: "mappa" | "operatore" }>();
+  for (const r of richieste) if (r.lat != null) destinazione.set(r.stopId, { lat: r.lat, lon: r.lon!, da: "operatore" });
+  if (daMappa.length) {
+    const token = process.env.MAPBOX_ACCESS_TOKEN || "";
+    if (!token) { res.status(503).json({ error: "Cartografia non configurata: indica lat e lon" }); return; }
+    let esiti: EsitoFermata[];
+    try { esiti = (await verificaAllineamento(daMappa, raggioValido(b.raggioM), token, recuperaMapbox)).fermate; }
+    catch (e: any) { res.status(502).json({ error: senzaToken(String(e?.message ?? e)).slice(0, 300) }); return; }
+    for (const e of esiti) {
+      if (e.esito === "da_spostare") destinazione.set(e.stopId, { lat: e.abbinamento!.mappa.lat, lon: e.abbinamento!.mappa.lon, da: "mappa" });
+      else saltate.push({
+        stopId: e.stopId, nome: e.nome,
+        motivo: e.esito === "centrata" ? "già sul simbolo della mappa"
+          : e.esito === "ambigua" ? "due fermate della mappa quasi alla stessa distanza: scegli tu indicando lat e lon"
+            : e.esito === "nessuna_sulla_mappa" ? "nessuna fermata disegnata sulla mappa nel raggio"
+              : `cartografia non leggibile: ${e.errore ?? "errore"}`,
+      });
+    }
+  }
+  if (destinazione.size === 0) { res.json({ spostate: [], saltate, tracciatiAggiornati: 0 }); return; }
+
+  const spostate: any[] = [];
+  let tracciatiAggiornati = 0;
+  await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+    for (const [stopId, d] of destinazione) {
+      const f = attuale.get(stopId)!;
+      await tx.execute(sql`
+        UPDATE ps_stops SET lat = ${d.lat}, lon = ${d.lon}, updated_at = now()
+         WHERE id = ${stopId}::uuid AND project_id = ${proj.id}::uuid
+      `);
+      // il punto del tracciato agganciato a questa fermata la segue
+      const u = await tx.execute(sql`
+        UPDATE ps_shapes s
+           SET waypoints = (
+                 SELECT jsonb_agg(
+                          CASE WHEN w->>'stopId' = ${stopId}
+                               THEN w || jsonb_build_object('lng', ${d.lon}::float8, 'lat', ${d.lat}::float8)
+                               ELSE w END
+                          ORDER BY o)
+                   FROM jsonb_array_elements(s.waypoints) WITH ORDINALITY AS t(w, o)),
+               updated_at = now()
+         WHERE s.project_id = ${proj.id}::uuid
+           AND jsonb_typeof(s.waypoints) = 'array'
+           AND s.waypoints @> ${JSON.stringify([{ stopId }])}::jsonb
+        RETURNING s.variant_id
+      `);
+      tracciatiAggiornati += ((u as any).rows ?? (u as any) ?? []).length;
+      const v = vettore(f.lat, f.lon, d.lat, d.lon);
+      spostate.push({
+        stopId, nome: f.nome, da: { lat: f.lat, lon: f.lon }, a: { lat: d.lat, lon: d.lon },
+        metri: arrotonda(Math.hypot(v.estM, v.nordM)), scelta: d.da,
+      });
+    }
+  }));
+  await logActivity(proj.id, req.user!.id, "ps.stop.allinea", {
+    payload: { spostate: spostate.map(s => ({ stopId: s.stopId, da: s.da, a: s.a, metri: s.metri, scelta: s.scelta })), saltate: saltate.length },
+  });
+  res.json({ spostate, saltate, tracciatiAggiornati });
 });
 
 router.patch("/planning-studio/projects/:id/stops/:stopId", async (req, res): Promise<void> => {
