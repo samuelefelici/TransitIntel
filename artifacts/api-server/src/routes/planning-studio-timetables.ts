@@ -26,6 +26,7 @@ import { versioniDelProgetto, seVersione, idNellaVersione, lineeDelProgetto } fr
 import { getLatestFeedId } from "./gtfs-helpers";
 import { giornataOggi } from "../lib/service-day";
 import { leggiOsservato } from "../lib/percorrenze-reali-db";
+import { leggiParametri, calcolaAcquisizione } from "../lib/percorrenze-acquisizione-db";
 import { SOSTA_NORMALE_S, RAGGIO_SOSTA_M } from "../lib/tratte-osservate";
 import {
   secondi, giorniOsservati, tipoPerGiornoTipo, esitiCorse, trattiENodi, riepilogoCorse,
@@ -983,6 +984,39 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId/percorrenze-re
   } catch (e: any) {
     console.warn("[percorrenze-reali]", e?.message || e);
     res.status(500).json({ error: "analisi delle percorrenze non riuscita" });
+  }
+});
+
+// ── GET /timetables/percorrenze-reali/acquisizione ──────────────────────────
+// L'anteprima dell'acquisizione dei tempi reali (lib/percorrenze-acquisizione):
+// per ogni corsa dell'ambito gli orari nuovi, da dove viene ogni tratto (ora,
+// fascia oraria, giornata, feriali o programmato) e la sosta al capolinea
+// prima e dopo, col suo giudizio. Sola lettura: scrive POST trips/retime-reale.
+//   ?ambito=corsa|percorso|linee  &tripIds=a,b  &variantId  &routeIds=a,b (vuoto = tutte)
+//   &dayTypeId (obbligatorio)  &valore=mediana|p85  &ripiego=feriale|nessuno  &giorni=7..180
+router.get("/planning-studio/:projectId/timetables/percorrenze-reali/acquisizione", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!(await requireTimetableRead(projectId, req, res))) return;
+    const par = leggiParametri(req.query as Record<string, unknown>);
+    if (!par.ok) { res.status(400).json({ error: par.errore }); return; }
+    const esito = await calcolaAcquisizione(projectId, par.p, await getLatestFeedId(req));
+    if (!esito.ok) { res.status(esito.stato).json({ error: esito.errore }); return; }
+    const { ricalcoli: _scrittura, ...a } = esito.a;
+    res.json({
+      ...a,
+      regole: {
+        partenza: "la partenza dal capolinea non cambia: cambiano i passaggi successivi",
+        tratto: "ogni tratto prende il tempo osservato all'ora in cui la corsa lo percorre; se l'ora ha pochi dati quello della sua fascia oraria, poi della giornata; poi, se chiesto, dei feriali; altrimenti resta il programmato",
+        valore: par.p.valore === "p85"
+          ? "85° percentile: l'orario regge anche le giornate peggiori, ma i bus arrivano spesso in anticipo"
+          : "mediana: l'orario descrive la giornata tipica; la sosta al capolinea assorbe le peggiori",
+        sosta: `la sosta oltre ${SOSTA_NORMALE_S}″ alle fermate (regolazione) è già tolta dai tempi osservati`,
+      },
+    });
+  } catch (e: any) {
+    console.warn("[percorrenze-acquisizione]", e?.message || e);
+    res.status(500).json({ error: "anteprima dei tempi reali non riuscita" });
   }
 });
 

@@ -84,6 +84,25 @@ describe("Osservato", () => {
     expect(o.per("1", "2", 20)).toMatchObject({ medianaS: 110, fonte: "giornata" });
   });
 
+  it("assorbe dai feriali solo le coppie senza dati, con ore e fasce, e le dichiara", () => {
+    const dom = new Osservato();
+    dom.aggiungi("1", "2", null, stat(100, 120));               // la domenica la vede
+    dom.aggiungi("2", "3", null, stat(80, 90, CAMPIONI_MINIMI - 1)); // la vede poco
+    const fer = new Osservato();
+    fer.aggiungi("1", "2", null, stat(300, 400));
+    fer.aggiungi("2", "3", null, stat(140, 160));
+    fer.aggiungi("2", "3", 8, stat(200, 260));
+    fer.aggiungiFascia("2", "3", "punta_mattino", stat(190, 250));
+    fer.aggiungi("3", "4", null, stat(50, 60, 2));               // pochi anche lì: niente
+    const prese = dom.assorbi(fer);
+    expect([...prese]).toEqual(["2>3"]);
+    expect(dom.per("1", "2", 8)).toMatchObject({ medianaS: 100 });
+    expect(dom.per("2", "3", 8)).toMatchObject({ medianaS: 200, fonte: "ora" });
+    expect(dom.per("2", "3", 7)).toMatchObject({ medianaS: 190, fonte: "fascia" });
+    expect(dom.haDati("2", "3")).toBe(true);
+    expect(dom.haDati("3", "4")).toBe(false);
+  });
+
   it("la fascia peggiore è quella con lo scarto più grande, fra quelle con dati", () => {
     const o = new Osservato();
     o.aggiungi("1", "2", 8, stat(100, 130));

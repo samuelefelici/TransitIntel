@@ -38,6 +38,7 @@ import {
 } from "@/lib/planning-studio-api";
 import { legProfile, applyLegProfile } from "@/lib/percorrenze-manuali";
 import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
+import TempiRealiPanel from "@/components/planning-studio/TempiRealiPanel";
 import { listPsDayTypes, getPsTripValidity } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 import {
@@ -86,6 +87,9 @@ export default function PlanningStudioPercorrenzePage() {
   const [routeId, setRouteId] = useState(preset.route);
   const [variantId, setVariantId] = useState(preset.variant);
   const [mode, setMode] = useState<"moltiplica" | "ricalcola" | "manuale">("moltiplica");
+  /* Ricalcola: da dove vengono i tempi. I tempi reali (SIRI) sono la fonte
+     vera; i coefficienti di traffico restano per chi parte da un'ipotesi. */
+  const [fonte, setFonte] = useState<"reale" | "traffico">("reale");
 
   const projectQ = useQuery({
     queryKey: ["ps", "project", projectId],
@@ -267,7 +271,10 @@ export default function PlanningStudioPercorrenzePage() {
       });
       toast.success(`✅ ${r.count} corse generate e salvate`, {
         description: `${mFrom}–${mTo} · una ogni ${mEvery} min · ${mApplyTraffic ? `traffico ${TRAFFIC_GROUP_LABEL[mGroup]}` : "senza variazione traffico"}${r.templateRemoved ? " · prototipo rimosso" : ""}`,
-        duration: 6000,
+        duration: 10000,
+        /* le corse appena generate hanno i tempi del modello: da qui si passa
+           ai tempi reali del percorso, ora per ora */
+        action: { label: "Tempi reali", onClick: () => { setMode("ricalcola"); setFonte("reale"); } },
       });
       setMStep("params"); setMProfile(null); setStMap({});
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
@@ -547,7 +554,7 @@ export default function PlanningStudioPercorrenzePage() {
         </div>
         {project && <span className="text-xs text-slate-500 ml-2">{project.name}</span>}
         <div className="flex-1" />
-        <span className="text-[11px] text-slate-500">tempi di percorrenza dai dati di traffico</span>
+        <span className="text-[11px] text-slate-500">tempi di percorrenza dai tempi reali (SIRI) e dai dati di traffico</span>
       </div>
       <PsProjectNav projectId={projectId} active="percorrenze" />
 
@@ -582,12 +589,29 @@ export default function PlanningStudioPercorrenzePage() {
           </div>
         </div>
 
-        {((mode === "manuale" && !routeId) || (mode !== "manuale" && !variantId)) && (
+        {/* Ricalcola: la fonte dei tempi */}
+        {mode === "ricalcola" && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-[11px] uppercase tracking-wider text-slate-500">Fonte dei tempi</span>
+            <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden">
+              <button onClick={() => setFonte("reale")}
+                className={`px-3 py-1.5 ${fonte === "reale" ? "bg-sky-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
+                Tempi reali (SIRI)
+              </button>
+              <button onClick={() => setFonte("traffico")}
+                className={`px-3 py-1.5 ${fonte === "traffico" ? "bg-emerald-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
+                Coefficienti di traffico
+              </button>
+            </div>
+          </div>
+        )}
+
+        {((mode === "manuale" && !routeId) || (mode !== "manuale" && !variantId && !(mode === "ricalcola" && fonte === "reale"))) && (
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-400">
             Seleziona <strong className="text-slate-200">linea</strong>{mode !== "manuale" && <> e <strong className="text-slate-200">percorso</strong></>} per iniziare.
             <div className="mt-2 text-[11px] leading-relaxed text-slate-500">
               <strong className="text-amber-300">Moltiplica corsa base</strong>: da una corsa template generi la cadenza nella fascia scelta, con le percorrenze adattate al traffico.<br />
-              <strong className="text-emerald-300">Ricalcola esistenti</strong>: il percorso ha già la cadenza — rifai le percorrenze dai dati di traffico senza toccare le partenze.<br />
+              <strong className="text-emerald-300">Ricalcola esistenti</strong>: le corse hanno già la cadenza — rifai le percorrenze dai tempi reali (una corsa, un percorso o tutte le linee) o dai coefficienti di traffico, senza toccare le partenze.<br />
               <strong className="text-indigo-300">Tempi a mano</strong>: linea + validità → i minuti di tratta di ogni percorso in colonna, modificabili; e i transiti di ogni singola corsa, correggibili uno a uno.
             </div>
           </div>
@@ -760,7 +784,20 @@ export default function PlanningStudioPercorrenzePage() {
         })()}
 
         {/* ════════ B · RICALCOLA ════════ */}
-        {variantId && mode === "ricalcola" && (
+        {mode === "ricalcola" && fonte === "reale" && (
+          <TempiRealiPanel
+            projectId={projectId}
+            routes={routes.map(r => ({ id: r.id, shortName: r.shortName, longName: r.longName }))}
+            routeId={routeId}
+            variantId={variantId}
+            variantLabel={(() => { const v = variants.find(x => x.id === variantId); return v ? `${(v as any).code ? `${(v as any).code} · ` : ""}${v.name}` : null; })()}
+            trips={tripsByDep.map(t => ({ id: t.id, label: tripLabel(t) }))}
+            dayTypes={(dayTypesQ.data ?? []).map(d => ({ id: d.id, code: d.code, name: d.name }))}
+            onApplied={() => { setStMap({}); qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] }); }}
+          />
+        )}
+
+        {variantId && mode === "ricalcola" && fonte === "traffico" && (
           <div className="rounded-lg border border-emerald-500/30 bg-slate-900/60 p-4 space-y-3 text-sm">
             <h3 className="text-sm font-semibold text-emerald-300 flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Ricalcola le percorrenze della cadenza esistente</h3>
             <p className="text-[11px] text-slate-400 leading-relaxed">
