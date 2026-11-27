@@ -10,6 +10,7 @@ import { describe, it, expect } from "vitest";
 import {
   controlloUdp, controlloTipiMezzo, controlloDepositi, controlloArchi, capolineaSenzaArco,
   controlloMargini, controlloMarginiReali, controlloDatiReali, esito, messaggioRifiuto, conteggi, chiaveCoord,
+  margineDaSegnalare, margineMin,
   type Arco, type Capolinea, type Deposito,
 } from "../lib/pronto-scheduler";
 
@@ -108,6 +109,22 @@ describe("andata e ritorno ai capolinea", () => {
       { tipo: "lateReturn", linea: "40", capolinea: "CIMITERO", arrivo: "10:00", ritorno: "11:00" }]).livello).toBe("ok");
     // oltre la mezzanotte del GTFS
     expect(controlloMargini([{ tipo: "tooTight", linea: "1/4", capolinea: "TAVERNELLE", arrivo: "24:50", ritorno: "24:50" }]).livello).toBe("errore");
+  });
+});
+
+describe("la sosta minima del capolinea nei margini", () => {
+  it("si segnala sotto i 2′ o sotto la sosta dichiarata", () => {
+    expect(margineMin({ arrivo: "08:10", ritorno: "08:13" })).toBe(3);
+    expect(margineDaSegnalare({ arrivo: "08:10", ritorno: "08:13", sostaMinima: null })).toBe(false);
+    expect(margineDaSegnalare({ arrivo: "08:10", ritorno: "08:13", sostaMinima: 5 })).toBe(true);
+    expect(margineDaSegnalare({ arrivo: "08:10", ritorno: "08:11", sostaMinima: null })).toBe(true);
+    expect(margineDaSegnalare({ arrivo: "08:10", ritorno: "08:16", sostaMinima: 5 })).toBe(false);
+  });
+
+  it("l'avviso dice quanti ritorni il giro non darà allo stesso bus", () => {
+    const c = controlloMargini([{ tipo: "tooTight", linea: "1/4", capolinea: "TAVERNELLE", arrivo: "09:00", ritorno: "09:03", sostaMinima: 5 }]);
+    expect(c.livello).toBe("avviso");
+    expect(c.dettaglio).toMatch(/1 ritorni sono sotto la sosta minima del capolinea/);
   });
 });
 

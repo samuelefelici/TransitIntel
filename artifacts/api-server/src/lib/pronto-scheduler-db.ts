@@ -25,7 +25,10 @@ import { esitiCorse, giorniOsservati, tipoPerGiornoTipo } from "./percorrenze-re
 import { giornataOggi } from "./service-day";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
 import { withVia } from "./agent-context";
+import { sosteMinimeDelProgetto } from "./soste-minime-db";
+import { sostaEffettiva } from "./soste-minime";
 import {
+  margineDaSegnalare, MARGINE_SCARSO_MIN,
   controlloUdp, controlloTipiMezzo, controlloDepositi, controlloArchi, controlloMargini,
   controlloMarginiReali, controlloDatiReali, esito,
   type Anomalia, type Arco, type Capolinea, type Controllo, type Deposito, type Esito,
@@ -159,13 +162,20 @@ export async function prontoPerScheduler(
   }));
   controlli.push(controlloArchi(capolinea, depGiro, archi));
 
-  /* 5. andata e ritorno ai capolinea, sulle corse dell'UDP */
-  const audit = await computeRoundTripAudit(psProjectId, { dayTypeId: u.dayTypeId });
+  /* 5. andata e ritorno ai capolinea, sulle corse dell'UDP: la soglia
+   *    dell'audit è la sosta minima più alta dichiarata, poi ogni capolinea
+   *    col suo valore (sotto, il giro non concatena le due corse) */
+  const soste = await sosteMinimeDelProgetto(psProjectId);
+  const dichiarate = [soste.predefinita, ...soste.perFermata.values(), ...soste.perNodo.values()].filter((x): x is number => x != null);
+  const audit = await computeRoundTripAudit(psProjectId, { dayTypeId: u.dayTypeId, minDelta: Math.max(MARGINE_SCARSO_MIN, ...dichiarate) });
   const anomalie: Anomalia[] = [];
   for (const l of audit.lines) {
     for (const i of l.issues) {
-      if (!attive.has(i.tripId)) continue;
-      anomalie.push({ tipo: i.kind, linea: l.shortName, capolinea: i.terminal, arrivo: i.arriveTime, ritorno: i.returnDepartTime ?? null });
+      if (!attive.has(i.tripId) || i.kind === "lateReturn") continue;
+      const sostaMinima = i.terminalStopId ? (sostaEffettiva(i.terminalStopId, soste)?.minuti ?? null) : null;
+      const a: Anomalia = { tipo: i.kind, linea: l.shortName, capolinea: i.terminal, arrivo: i.arriveTime, ritorno: i.returnDepartTime ?? null, sostaMinima };
+      if (i.kind === "tooTight" && !margineDaSegnalare(a)) continue;
+      anomalie.push(a);
     }
   }
   controlli.push(controlloMargini(anomalie));

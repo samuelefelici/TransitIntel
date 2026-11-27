@@ -93,7 +93,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("pronto per lo scheduler, sul da
     expect(controllo(p, "depositi").livello).toBe("avviso");
     expect(p.depositi.map((d: any) => d.id)).toContain(DEP);
     expect((await prontoPerScheduler(P, UDP, { depotIds: [u(999)], datiReali: false }))!.controlli
-      .find((c: any) => c.chiave === "depositi").livello).toBe("errore");
+      .find((c: any) => c.chiave === "depositi")!.livello).toBe("errore");
   });
 
   it("con i dati reali: senza transiti SIRI è un avviso, non un errore", async () => {
@@ -116,6 +116,18 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("pronto per lo scheduler, sul da
     expect(p.pronto).toBe(false);
     // rifatto, non cambia niente
     expect(await riallineaUdp(P, UDP, [])).toMatchObject({ ok: true, r: { aggiunte: 0, tolte: 0 } });
+  });
+
+  it("la sosta minima del capolinea entra nei margini", async () => {
+    // il ritorno della A riparte 3′ dopo l'arrivo: oltre i 2′, sotto i 5′ dichiarati a Periferia
+    await db.execute(sql`UPDATE ps_stop_times SET arrival_time = '08:23:00', departure_time = '08:23:00' WHERE trip_id = ${TA2}::uuid AND stop_seq = 1`);
+    const senza = controllo((await prontoPerScheduler(P, UDP, { depotIds: [DEP], datiReali: false }))!, "margini_capolinea");
+    expect(senza.livello).toBe("avviso");                      // resta la A delle 09:00 senza ritorno
+    expect(senza.dettaglio).not.toMatch(/sotto la sosta minima/);
+    await db.execute(sql`UPDATE ps_stops SET attributes = attributes || '{"sostaMinimaMin": 5}'::jsonb WHERE id = ${S2}::uuid`);
+    const con = controllo((await prontoPerScheduler(P, UDP, { depotIds: [DEP], datiReali: false }))!, "margini_capolinea");
+    expect(con.dettaglio).toMatch(/1 ritorni sono sotto la sosta minima del capolinea/);
+    expect(con.campioni.some((x: string) => /arriva 08:20, riparte 08:23/.test(x))).toBe(true);
   });
 
   it("un'UDP di un altro progetto non si legge; i depositi della richiesta si validano", async () => {

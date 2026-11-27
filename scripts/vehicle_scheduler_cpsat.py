@@ -570,6 +570,7 @@ def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
 _LAST_ARCS_PRUNED = False
 # DELAY-ROBUST: archi scartati per il buffer ritardi nell'ultimo build.
 _LAST_ROBUST_DROPPED = 0
+_LAST_LAYOVER_DROPPED = 0   # SOSTA MINIMA: archi scartati SOLO per la sosta minima al capolinea
 # NORMATIVA: archi scartati dai filtri hard (vieta cambi linea / vuoti interni).
 _NORMATIVA_DROPPED = {"lineChange": 0, "internalDeadhead": 0}
 
@@ -863,6 +864,64 @@ def service_return_proposals(shifts: list[VehicleShift], trips: list[Trip], rate
     return out[:max_items]
 
 
+def buffer_ritardi(trips: list[Trip], robustness_cfg: dict) -> tuple[dict[int, int], str, float, int, bool]:
+    """DELAY-ROBUST: il margine δ (minuti) dopo l'arrivo di ogni corsa.
+
+    robustness = { level: off|media|alta, delayByHour: {"0".."23": min di ritardo
+    per ORA di corsa}, delayByTrip: {trip_id: min di ritardo all'85° SIRI} }.
+    Il ritardo della corsa (SIRI) vince: δ = fattore × ritardo; senza, il
+    profilo orario: δ = fattore × delayByHour[ora d'arrivo] × durata/60.
+    Tetto 15′. Ritorna (buffer per idx, livello, fattore, corse da SIRI, profilo reale)."""
+    level = str((robustness_cfg or {}).get("level") or "off").lower()
+    factor = {"off": 0.0, "media": 1.0, "alta": 1.8}.get(level, 0.0)
+    buffers: dict[int, int] = {}
+    if factor <= 0:
+        return buffers, level, factor, 0, False
+    delay_by_hour: dict[int, float] = {}
+    for k, v in ((robustness_cfg or {}).get("delayByHour") or {}).items():
+        try:
+            delay_by_hour[int(k)] = max(0.0, float(v))
+        except (TypeError, ValueError):
+            continue
+    delay_by_trip: dict[str, float] = {}
+    for k, v in ((robustness_cfg or {}).get("delayByTrip") or {}).items():
+        if isinstance(v, bool):
+            continue
+        try:
+            delay_by_trip[str(k)] = max(0.0, float(v))
+        except (TypeError, ValueError):
+            continue
+    DEFAULT_DELAY_PER_TRIP_HOUR = 4.0  # min/h di corsa se nessun dato reale
+    from_siri = 0
+    for t in trips:
+        if t.trip_id in delay_by_trip:
+            buf = round(factor * delay_by_trip[t.trip_id])
+            from_siri += 1
+        else:
+            hh = (t.arrival_min // 60) % 24
+            buf = round(factor * delay_by_hour.get(hh, DEFAULT_DELAY_PER_TRIP_HOUR) * (t.duration_min / 60.0))
+        if buf > 0:
+            buffers[t.idx] = min(15, buf)
+    return buffers, level, factor, from_siri, bool(delay_by_hour)
+
+
+def parse_sosta_minima(raw) -> tuple[dict[str, int], int | None]:
+    """config.sostaMinima = {perFermata: {stop_id: minuti}, predefinitaMin: minuti|null}.
+
+    Minuti interi 0–60; il resto si scarta. Senza dati: ({}, None) = come prima."""
+    if not isinstance(raw, dict):
+        return {}, None
+    per: dict[str, int] = {}
+    for k, v in (raw.get("perFermata") or {}).items():
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)) and float(v).is_integer() and 0 <= v <= 60:
+            per[str(k)] = int(v)
+    d = raw.get("predefinitaMin")
+    default = int(d) if isinstance(d, (int, float)) and not isinstance(d, bool) and float(d).is_integer() and 0 <= d <= 60 else None
+    return per, default
+
+
 def build_compatible_arcs_fast(
     trips: list[Trip],
     rates: VehicleCostRates,
@@ -870,8 +929,17 @@ def build_compatible_arcs_fast(
     delay_buffers: dict[int, int] | None = None,
     depots: list[dict] | None = None,
     keep_pairs: set[tuple[int, int]] | None = None,
+    min_layover_by_stop: dict[str, int] | None = None,
+    min_layover_default: int | None = None,
 ) -> list[Arc]:
     """O(n x k) arc building with bisect temporal windowing.
+
+    SOSTA MINIMA AL CAPOLINEA (Planning Studio): min_layover_by_stop[stop_id] =
+    minuti di sosta che un bus deve fare al capolinea d'ARRIVO della corsa i
+    prima di ripartire (dato della fermata, del nodo o del progetto, risolto
+    dall'API); min_layover_default per le fermate senza dato. Allo stesso
+    capolinea vale la sosta minima (senza dati: 0, come prima); fra fermate
+    diverse il massimo fra la sosta minima e MIN_LAYOVER.
 
     LUCCHETTO: `keep_pairs` sono gli agganci dei turni bloccati; il pruning
     anti-OOM non li scarta mai (un arco che esiste e non e' fra i K migliori
@@ -927,9 +995,13 @@ def build_compatible_arcs_fast(
     _LAST_ROBUST_DROPPED = 0
     _NORMATIVA_DROPPED["lineChange"] = 0
     _NORMATIVA_DROPPED["internalDeadhead"] = 0
+    global _LAST_LAYOVER_DROPPED
+    _LAST_LAYOVER_DROPPED = 0
     for i in range(n):
         ti = trips[i]
         delay_buf = (delay_buffers or {}).get(i, 0)
+        # la sosta minima al capolinea d'arrivo di i (None = nessun dato)
+        sosta_min = (min_layover_by_stop or {}).get(ti.last_stop_id, min_layover_default)
         # FIX-TIGHT: usiamo gap≥0 (NON arrival+MIN_LAYOVER) per non pre-escludere
         # archi tight. Il filtro `MIN_LAYOVER` viene applicato dopo, e SOLO se le
         # due corse non sono sullo stesso capolinea fisico.
@@ -1016,6 +1088,14 @@ def build_compatible_arcs_fast(
             # stesso capolinea NON deve essere bloccato dal MIN_LAYOVER=3min.
             # Il layover serve solo come buffer per spostarsi tra fermate diverse.
             min_layover_eff = 0 if (same_id or same_cluster) else MIN_LAYOVER
+            if sosta_min is not None:
+                # SOSTA MINIMA: allo stesso capolinea la sosta dichiarata, fra
+                # fermate diverse non meno di MIN_LAYOVER
+                prima = min_layover_eff
+                min_layover_eff = sosta_min if (same_id or same_cluster) else max(MIN_LAYOVER, sosta_min)
+                if (ti.arrival_min + max(dh_min, min_layover_eff) > tj.departure_min
+                        and ti.arrival_min + max(dh_min, prima) <= tj.departure_min):
+                    _LAST_LAYOVER_DROPPED += 1
             base_ready = ti.arrival_min + max(dh_min, min_layover_eff)
             if base_ready > tj.departure_min:
                 continue
@@ -4195,29 +4275,13 @@ def run(data: dict) -> dict:
     #                                       ORA di corsa in quella fascia } }
     # δ_i = fattore(level) × delayByHour[ora_arrivo_i] × durata_i/60, cap 15 min.
     robustness_cfg = config.get("robustness") or {}
-    robust_level = str(robustness_cfg.get("level") or "off").lower()
-    robust_factor = {"off": 0.0, "media": 1.0, "alta": 1.8}.get(robust_level, 0.0)
-    delay_buffers: dict[int, int] = {}
-    if robust_factor > 0:
-        dbh_raw = robustness_cfg.get("delayByHour") or {}
-        delay_by_hour = {}
-        for k, v in dbh_raw.items():
-            try:
-                delay_by_hour[int(k)] = max(0.0, float(v))
-            except (TypeError, ValueError):
-                continue
-        DEFAULT_DELAY_PER_TRIP_HOUR = 4.0  # min/h di corsa se nessun dato reale
-        for t in trips:
-            hh = (t.arrival_min // 60) % 24
-            per_hour = delay_by_hour.get(hh, DEFAULT_DELAY_PER_TRIP_HOUR)
-            buf = round(robust_factor * per_hour * (t.duration_min / 60.0))
-            if buf > 0:
-                delay_buffers[t.idx] = min(15, buf)
-        if delay_buffers:
-            avg_buf = sum(delay_buffers.values()) / len(delay_buffers)
-            log(f"  [VSP-ROBUST] robustezza={robust_level} (×{robust_factor}): "
-                f"buffer su {len(delay_buffers)}/{n} corse, media {avg_buf:.1f} min"
-                + (" · profilo ritardi REALE" if delay_by_hour else " · profilo di default"))
+    delay_buffers, robust_level, robust_factor, robust_from_siri, profilo_reale = buffer_ritardi(trips, robustness_cfg)
+    if delay_buffers or robust_from_siri:
+        avg_buf = sum(delay_buffers.values()) / max(1, len(delay_buffers))
+        log(f"  [VSP-ROBUST] robustezza={robust_level} (×{robust_factor}): "
+            f"buffer su {len(delay_buffers)}/{n} corse, media {avg_buf:.1f} min"
+            + (f" · ritardo SIRI per {robust_from_siri} corse" if robust_from_siri else "")
+            + (" · profilo ritardi REALE" if profilo_reale else " · profilo di default"))
 
     # Build arcs
     report_progress("VSP", 10, "Building compatibility arcs...")
@@ -4225,10 +4289,18 @@ def run(data: dict) -> dict:
     _VIA_DEPOT_ARCS["forbiddenDirect"] = 0
     _VIA_DEPOT_ARCS["chosenOverDirect"] = 0
     lock_pairs = locked_pairs_from_input(data.get("lockedChains"), trips)
+    sosta_by_stop, sosta_default = parse_sosta_minima(config.get("sostaMinima"))
+    if sosta_by_stop or sosta_default is not None:
+        log(f"  [VSP-SOSTA] sosta minima su {len(sosta_by_stop)} capolinea"
+            + (f", {sosta_default}′ per gli altri" if sosta_default is not None else ""))
     arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None,
                                       delay_buffers=delay_buffers or None,
                                       depots=depots_data or None,
-                                      keep_pairs=lock_pairs or None)
+                                      keep_pairs=lock_pairs or None,
+                                      min_layover_by_stop=sosta_by_stop or None,
+                                      min_layover_default=sosta_default)
+    if _LAST_LAYOVER_DROPPED:
+        log(f"  [VSP-SOSTA] {_LAST_LAYOVER_DROPPED} concatenamenti scartati per la sosta minima al capolinea")
     if _VIA_DEPOT_ARCS["forbiddenDirect"]:
         log(f"  [VSP-DH-ARCHIVE] {_VIA_DEPOT_ARCS['forbiddenDirect']} coppie con riposizionamento diretto vietato, "
             f"{_VIA_DEPOT_ARCS['count']} instradate via deposito")
@@ -4618,7 +4690,14 @@ def run(data: dict) -> dict:
             "avgBufferMin": round(sum(delay_buffers.values()) / len(delay_buffers), 1) if delay_buffers else 0,
             "maxBufferMin": max(delay_buffers.values()) if delay_buffers else 0,
             "arcsDropped": _LAST_ROBUST_DROPPED,
+            "tripsFromSiri": robust_from_siri,
         } if robust_factor > 0 else None,
+        # SOSTA MINIMA al capolinea (Planning Studio)
+        "sostaMinima": {
+            "capolinea": len(sosta_by_stop),
+            "predefinitaMin": sosta_default,
+            "archiScartati": _LAST_LAYOVER_DROPPED,
+        } if (sosta_by_stop or sosta_default is not None) else None,
         # NORMATIVA VSP
         "normativa": {
             "rules": normativa_active,

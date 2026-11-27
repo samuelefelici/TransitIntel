@@ -74,6 +74,7 @@ import planningStudioValidityCategoriesRouter from "../lib/planning-studio-valid
 import planningStudioValidityUnitsRouter from "../lib/planning-studio-validity-units";
 import udpScenariRouter from "../lib/udp-scenari-db";
 import prontoSchedulerRouter from "../lib/pronto-scheduler-db";
+import sosteMinimeRouter from "../lib/soste-minime-rotte";
 import planningStudioCalendarRouter from "../lib/planning-studio-calendar";
 import planningStudioZonesRouter from "../lib/planning-studio-zones";
 import planningStudioHealthRouter from "../lib/planning-studio-health";
@@ -179,6 +180,7 @@ router.use(planningStudioValidityCategoriesRouter);
 router.use(planningStudioValidityUnitsRouter);
 router.use(udpScenariRouter); // gli scenari della Fucina di un'UDP: anteprima ed eliminazione in blocco
 router.use(prontoSchedulerRouter); // pronto per lo scheduler: i controlli prima del giro, e il riallineamento dell'UDP
+router.use(sosteMinimeRouter); // la sosta minima al capolinea: della fermata, del nodo o del progetto
 router.use(planningStudioCalendarRouter); // calendario aziendale + classificazione giorni (albero validità)
 router.use(planningStudioZonesRouter); // zonizzazione: confini comunali + km sviluppati per comune
 router.use(planningStudioHealthRouter); // controllo salute progetto (pre-flight di attivazione)

@@ -5985,6 +5985,17 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/build.ts
    artifacts/api-server/package.json
    pnpm-lock.yaml
+   artifacts/api-server/src/lib/soste-minime.ts
+   artifacts/api-server/src/lib/soste-minime-db.ts
+   artifacts/api-server/src/lib/caronte-schema.ts
+   artifacts/api-server/src/lib/tratte-osservate.ts
+   artifacts/api-server/src/lib/tratte-osservate-db.ts
+   artifacts/api-server/src/lib/day-classifier.ts
+   artifacts/api-server/src/lib/percorrenze-reali.ts
+   artifacts/api-server/src/lib/percorrenze-reali-db.ts
+   artifacts/api-server/src/lib/percorrenze-acquisizione.ts
+   artifacts/api-server/src/lib/percorrenze-acquisizione-db.ts
+   artifacts/api-server/src/lib/ritardi-siri.ts
    ```
 6. Deploy, poi nel log: «Lavoratore dei calcoli avviato» e «Schema del
    database allineato al codice». Se lo schema è indietro (l'API non ha

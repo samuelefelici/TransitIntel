@@ -224,6 +224,27 @@ export interface Anomalia {
   capolinea: string;
   arrivo: string;
   ritorno: string | null;
+  /** la sosta minima dichiarata a quel capolinea (null = nessun dato) */
+  sostaMinima?: number | null;
+}
+
+/** Margine fra arrivo e ripartenza, in minuti (null se manca un orario). */
+export function margineMin(a: Pick<Anomalia, "arrivo" | "ritorno">): number | null {
+  const x = minuti(a.arrivo), y = minuti(a.ritorno);
+  return x != null && y != null ? y - x : null;
+}
+
+/** Il margine minimo «scarso» quando il capolinea non ha una sosta dichiarata. */
+export const MARGINE_SCARSO_MIN = 2;
+
+/**
+ * Un margine da segnalare: sotto i 2′, o sotto la sosta minima dichiarata a
+ * quel capolinea (il giro non darà le due corse allo stesso bus).
+ */
+export function margineDaSegnalare(a: Pick<Anomalia, "arrivo" | "ritorno" | "sostaMinima">): boolean {
+  const m = margineMin(a);
+  if (m == null) return true;
+  return m < MARGINE_SCARSO_MIN || (a.sostaMinima != null && m < a.sostaMinima);
 }
 
 const minuti = (hhmm: string | null) => {
@@ -250,10 +271,15 @@ export function controlloMargini(anomalie: Anomalia[]): Controllo {
     };
   }
   const contano = anomalie.filter(a => a.tipo !== "noVariantCode" && a.tipo !== "lateReturn");
+  const sottoSosta = anomalie.filter(a => {
+    const m = margineMin(a);
+    return a.tipo === "tooTight" && a.sostaMinima != null && m != null && m > 0 && m < a.sostaMinima;
+  }).length;
   if (contano.length) {
     return {
       chiave: "margini_capolinea", livello: "avviso", titolo, numero: contano.length,
-      dettaglio: `${contano.length} corse con margine scarso o senza la corsa di ritorno/andata al capolinea: ogni caso è un fuorilinea in più o un ritardo che passa al giro dopo.`,
+      dettaglio: `${contano.length} corse con margine scarso o senza la corsa di ritorno/andata al capolinea: ogni caso è un fuorilinea in più o un ritardo che passa al giro dopo.`
+        + (sottoSosta ? ` ${sottoSosta} ritorni sono sotto la sosta minima del capolinea: il giro non li darà allo stesso bus.` : ""),
       campioni: contano.map(descr).slice(0, CAMPIONI),
       rimedio: null,
     };
