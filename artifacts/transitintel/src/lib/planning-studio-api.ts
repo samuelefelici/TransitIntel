@@ -820,6 +820,81 @@ export async function retimePsTripsTraffic(projectId: string, body: {
   });
 }
 
+/* ─── Tempi reali (SIRI) nel programma ───
+ * Il calcolo è sul server (lib/percorrenze-acquisizione): l'anteprima legge,
+ * la scrittura rifà lo stesso calcolo e scrive le corse scelte. */
+export type PsAmbitoTempiReali = "corsa" | "percorso" | "linee";
+export interface PsParametriTempiReali {
+  ambito: PsAmbitoTempiReali;
+  tripIds?: string[];
+  variantId?: string;
+  /** ambito linee: vuoto = tutte le linee del progetto */
+  routeIds?: string[];
+  dayTypeId: string;
+  valore: "mediana" | "p85";
+  /** dove il tipo di giorno non ha dati, i feriali (dichiarati) */
+  ripiego: boolean;
+  giorni?: number;
+}
+export type PsGiudizioSosta = "assorbe" | "al_limite" | "insufficiente" | "rientro" | "senza_dati";
+export interface PsSostaCapolinea {
+  sostaMin: number | null;
+  prossimaPartenza: string | null;
+  giudizio: PsGiudizioSosta;
+  ritardoP85Min: number | null;
+}
+export interface PsCorsaTempiReali {
+  tripId: string;
+  routeId: string;
+  linea: string | null;
+  variantId: string;
+  percorso: string | null;
+  direzione: number | null;
+  partenza: string | null;
+  arrivoAttuale: string | null;
+  arrivoNuovo: string | null;
+  variazioneMin: number | null;
+  tratti: number;
+  fonti: { ora: number; fascia: number; giornata: number; feriale: number; programmato: number };
+  cambia: boolean;
+  saltata: string | null;
+  prima: PsSostaCapolinea | null;
+  dopo: PsSostaCapolinea | null;
+}
+export interface PsAnteprimaTempiReali {
+  giornoTipo: { id: string; codice: string | null; nome: string | null };
+  osservazione: {
+    tipoGiorno: "festivo" | "sabato" | "feriale"; giorni: number; giorniDelTipo: number;
+    dal: string | null; al: string | null; transiti: number; fonte: string; disponibile: boolean;
+    coppieDaFeriale: number;
+  };
+  notaValidita: string | null;
+  corse: PsCorsaTempiReali[];
+  riepilogo: { corse: number; cambiano: number; saltate: number; prima: Record<string, number>; dopo: Record<string, number> };
+  regole: Record<string, string>;
+}
+const qsTempiReali = (p: PsParametriTempiReali) => {
+  const q = new URLSearchParams({
+    ambito: p.ambito, dayTypeId: p.dayTypeId, valore: p.valore, ripiego: p.ripiego ? "feriale" : "nessuno",
+  });
+  if (p.tripIds?.length) q.set("tripIds", p.tripIds.join(","));
+  if (p.variantId) q.set("variantId", p.variantId);
+  if (p.routeIds?.length) q.set("routeIds", p.routeIds.join(","));
+  if (p.giorni) q.set("giorni", String(p.giorni));
+  return q.toString();
+};
+export async function anteprimaTempiReali(projectId: string, p: PsParametriTempiReali): Promise<PsAnteprimaTempiReali> {
+  return apiFetch(`/api/planning-studio/${projectId}/timetables/percorrenze-reali/acquisizione?${qsTempiReali(p)}`);
+}
+export async function applicaTempiReali(projectId: string, p: PsParametriTempiReali, applica: string[]): Promise<{
+  ok: boolean; corse: number; fermate: number; nonNellAmbito: number; senzaModifiche: number; saltate: number;
+}> {
+  return apiFetch(`/api/planning-studio/projects/${projectId}/trips/retime-reale`, {
+    method: "POST",
+    body: JSON.stringify({ ...p, ripiego: p.ripiego ? "feriale" : "nessuno", applica }),
+  });
+}
+
 /* ─── Import GTFS ─── */
 
 export interface PsImportCounts {

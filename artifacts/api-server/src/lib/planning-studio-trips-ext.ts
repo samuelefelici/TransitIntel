@@ -23,6 +23,8 @@ import { gestoriDalDatabase } from "./gestori-store";
 import { withVia } from "./agent-context";
 import { conContesto } from "@workspace/db/contesto";
 import { erroreLeggibile } from "../middlewares/errori-interni";
+import { getLatestFeedId } from "../routes/gtfs-helpers";
+import { leggiParametri, calcolaAcquisizione, scriviAcquisizione, MAX_CORSE_AMBITO } from "./percorrenze-acquisizione-db";
 
 const router: IRouter = Router();
 
@@ -1177,6 +1179,45 @@ router.post("/planning-studio/projects/:id/trips/retime", async (req, res): Prom
   await logActivity(projId, userId, "trip.retime_traffic", "variant", variantId,
     { count: doneIds.length, skipped: skippedIds.length, referenceTripId });
   res.json({ ok: true, count: doneIds.length, tripIds: doneIds, skippedTripIds: skippedIds });
+});
+
+/* ─── ACQUISIRE I TEMPI REALI (SIRI) ─────────────────────────────────────────
+ * Gli orari delle corse dell'ambito (una corsa, un percorso, una o più linee)
+ * rifatti sui tempi osservati, ora per ora: lo stesso calcolo dell'anteprima
+ * (GET timetables/percorrenze-reali/acquisizione), RIFATTO qui sul server —
+ * si scrive quello che il calcolo dà, non quello che manda il browser.
+ * Le partenze non cambiano. Si scrivono solo le corse elencate in `applica`
+ * (fra quelle dell'ambito) e solo le fermate il cui orario cambia.
+ *
+ * Body: { ambito, tripIds?, variantId?, routeIds?, dayTypeId, valore?, ripiego?,
+ *         giorni?, applica: uuid[] } */
+router.post("/planning-studio/projects/:id/trips/retime-reale", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+  const b = req.body ?? {};
+  const par = leggiParametri(b);
+  if (!par.ok) { res.status(400).json({ error: par.errore }); return; }
+  const applica: string[] = Array.isArray(b.applica) ? b.applica.map((x: any) => String(x)) : [];
+  if (applica.length === 0 || applica.length > MAX_CORSE_AMBITO || applica.some(x => !UUID_RE.test(x))) {
+    res.status(400).json({ error: `applica: da 1 a ${MAX_CORSE_AMBITO} id di corse` }); return;
+  }
+  try {
+    const esito = await calcolaAcquisizione(projId, par.p, await getLatestFeedId(req));
+    if (!esito.ok) { res.status(esito.stato).json({ error: esito.errore }); return; }
+    const scritto = await scriviAcquisizione(esito.a, applica);
+    await logActivity(projId, userId, "trip.retime_reale", "project", projId, {
+      ...scritto, ambito: par.p.ambito, dayTypeId: par.p.dayTypeId, tipoGiorno: esito.a.osservazione.tipoGiorno,
+      valore: par.p.valore, ripiego: par.p.ripiego, giorni: par.p.giorni,
+      variantId: par.p.variantId ?? undefined, linee: par.p.routeIds.length || undefined,
+    });
+    res.json({ ok: true, ...scritto });
+  } catch (e: any) {
+    console.error("[ps-trips-ext] tempi reali:", e?.message || e);
+    erroreLeggibile(res, 500, "Tempi reali non scritti");
+  }
 });
 
 /* ─── PROTOTIPI PER I PERCORSI SENZA CORSE ─────────────────────────────────

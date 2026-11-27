@@ -126,6 +126,28 @@ export class Osservato {
     const g = this.perGiorno.get(`${da}>${a}`);
     return g && g.n >= CAMPIONI_MINIMI ? { ...g, fonte: "giornata" } : null;
   }
+  /** Vero se la coppia ha abbastanza campioni sulla giornata. */
+  haDati(da: string | null, a: string | null): boolean {
+    if (!da || !a) return false;
+    const g = this.perGiorno.get(`${da}>${a}`);
+    return !!g && g.n >= CAMPIONI_MINIMI;
+  }
+  /** Prende da un'altra osservazione (il ripiego sui feriali) le coppie che
+   *  qui non hanno dati sulla giornata, con le loro ore e fasce. Restituisce
+   *  le coppie prese, `${da}>${a}`: chi le usa le deve dichiarare. */
+  assorbi(altro: Osservato): Set<string> {
+    const prese = new Set<string>();
+    for (const [k, g] of altro.perGiorno) {
+      if (g.n < CAMPIONI_MINIMI) continue;
+      const qui = this.perGiorno.get(k);
+      if (qui && qui.n >= CAMPIONI_MINIMI) continue;
+      this.perGiorno.set(k, g);
+      prese.add(k);
+    }
+    for (const [k, v] of altro.perOra) if (prese.has(k.slice(0, k.lastIndexOf("@")))) this.perOra.set(k, v);
+    for (const [k, v] of altro.perFascia) if (prese.has(k.slice(0, k.lastIndexOf("#")))) this.perFascia.set(k, v);
+    return prese;
+  }
   giornata(da: string | null, a: string | null): StatTratto | null {
     if (!da || !a) return null;
     return this.perGiorno.get(`${da}>${a}`) ?? null;
