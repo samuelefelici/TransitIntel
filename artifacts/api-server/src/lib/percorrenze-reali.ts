@@ -28,6 +28,16 @@ export const CAMPIONI_MINIMI = 5;
 export const MARGINE_S = 120;
 /** Oltre questa attesa al capolinea non è "la corsa dopo", è un'altra fase. */
 export const ATTESA_MAX_S = 3 * 3600;
+/** Una partenza fino a tanto PRIMA dell'arrivo è ancora la corsa dopo dello
+ *  stesso bus, con delta negativo: la 22/24 arriva a Brecce Bianche alle
+ *  8:10:36 e riparte alle 8:10:00. Saltarla faceva trovare quella di un'ora
+ *  dopo e giudicare "assorbe" una sosta che non c'è. */
+export const ANTICIPO_MAX_S = 3 * 60;
+/** Quanto i ritardi dei tratti di una stessa corsa vanno insieme. Sommare gli
+ *  85° percentili (correlazione 1) vuol dire che tutti i tratti vanno male
+ *  nella stessa corsa; sommarli in quadratura (0) che non si influenzano mai.
+ *  Il traffico li lega, ma solo in parte: 0,3. */
+export const CORRELAZIONE_TRATTI = 0.3;
 /** Due fermate entro questi metri sono lo stesso capolinea (piazza, stalli). */
 export const STESSO_CAPOLINEA_M = 250;
 
@@ -164,16 +174,22 @@ export function ritardoCorsa(c: CorsaProgetto, oss: Osservato): {
 } {
   const fs = c.fermate;
   if (fs.length < 2) return { programmatoS: null, medianoS: null, p85S: null, coperturaPct: 0 };
-  let prog = 0, med = 0, p85 = 0, coperto = 0;
+  let prog = 0, med = 0, coperto = 0, dSomma = 0, dQuadr = 0;
   for (let i = 0; i + 1 < fs.length; i++) {
     const dep = orario(fs[i], "partenza"), arr = orario(fs[i + 1], "arrivo");
     if (dep == null || arr == null) continue;
     const p = Math.max(0, arr - dep);
     prog += p;
     const s = oss.per(fs[i].gtfsId, fs[i + 1].gtfsId, Math.floor(dep / 3600) % 24);
-    if (s) { med += s.medianaS; p85 += s.p85S; coperto += p; }
-    else { med += p; p85 += p; }
+    if (s) {
+      med += s.medianaS; coperto += p;
+      const d = Math.max(0, s.p85S - s.medianaS);
+      dSomma += d; dQuadr += d * d;
+    } else med += p;
   }
+  // l'85° della corsa: la mediana più lo scarto dei tratti, combinati con
+  // la correlazione dichiarata (fra la quadratura e la somma piena)
+  const p85 = med + Math.sqrt((1 - CORRELAZIONE_TRATTI) * dQuadr + CORRELAZIONE_TRATTI * dSomma * dSomma);
   const tot = (orario(fs[fs.length - 1], "arrivo") ?? 0) - (orario(fs[0], "partenza") ?? 0);
   const programmatoS = tot > 0 ? tot : prog;
   return {
@@ -208,7 +224,7 @@ export function esitiCorse(corse: CorsaProgetto[], oss: Osservato): EsitoCorsa[]
       const ritMed = r.medianoS != null && r.programmatoS != null ? r.medianoS - r.programmatoS : null;
       const ritP85 = r.p85S != null && r.programmatoS != null ? r.p85S - r.programmatoS : null;
       const dopo = arr == null ? undefined : partenze.find(p =>
-        p.c.tripId !== c.tripId && p.dep >= arr && p.dep - arr <= ATTESA_MAX_S && stessoCapolinea(ultima, p.prima));
+        p.c.tripId !== c.tripId && p.dep >= arr - ANTICIPO_MAX_S && p.dep - arr <= ATTESA_MAX_S && stessoCapolinea(ultima, p.prima));
       const delta = dopo && arr != null ? dopo.dep - arr : null;
       const giudizio = giudica(delta, ritMed, ritP85, r.coperturaPct);
       return {

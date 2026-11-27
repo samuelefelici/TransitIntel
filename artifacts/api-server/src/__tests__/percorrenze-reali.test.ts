@@ -88,7 +88,7 @@ describe("una corsa: ritardo atteso e copertura", () => {
     const r = ritardoCorsa(andata("07:45:00", "08:10:00", "07:58:00"), o);
     expect(r.programmatoS).toBe(25 * 60);
     expect(r.medianoS).toBe(15 * 60 + 12 * 60);   // 2′ in più sul primo tratto
-    expect(r.p85S).toBe(18 * 60 + 12 * 60);
+    expect(r.p85S).toBe(15 * 60 + 12 * 60 + 3 * 60);  // un solo tratto con dati: il suo scarto intero
     expect(r.coperturaPct).toBe(52);               // 13′ su 25′ coperti
   });
 });
@@ -100,6 +100,21 @@ describe("il delta finale", () => {
   o.aggiungi("300", "201", null, stat(12 * 60, 14 * 60));
   o.aggiungi("201", "101", null, stat(12 * 60, 13 * 60));
 
+  it("arriva 36″ dopo che il ritorno è partito: delta negativo, non la corsa di un'ora dopo", () => {
+    const corse = [
+      andata("07:45:00", "08:10:36", "07:58:00"),
+      ritorno("08:10:00", "08:34:00", "08:22:00"),
+      ritorno("09:10:00", "09:34:00", "09:22:00"),
+    ];
+    const a1 = esitiCorse(corse, o).find(x => x.tripId === "A07:45:00")!;
+    expect(a1.prossimaPartenza).toBe("08:10");
+    expect(a1.deltaFinaleMin).toBe(-0.6);
+    expect(a1.giudizio).toBe("insufficiente");
+    // oltre 3′ prima dell'arrivo non è più lo stesso bus
+    const lontano = esitiCorse([andata("07:45:00", "08:14:00", "07:58:00"), ritorno("08:10:00", "08:34:00", "08:22:00")], o);
+    expect(lontano[0].giudizio).toBe("rientro");
+  });
+
   it("la 22/24 a Brecce Bianche: 0′ di sosta contro 2′ di ritardo → insufficiente", () => {
     const corse = [andata("07:45:00", "08:10:00", "07:58:00"), ritorno("08:10:00", "08:34:00", "08:22:00"), andata("08:45:00", "09:10:00", "08:58:00")];
     const e = esitiCorse(corse, o);
@@ -107,7 +122,7 @@ describe("il delta finale", () => {
     expect(a1.deltaFinaleMin).toBe(0);
     expect(a1.prossimaPartenza).toBe("08:10");
     expect(a1.ritardoMedianoMin).toBe(2);
-    expect(a1.ritardoP85Min).toBe(6);
+    expect(a1.ritardoP85Min).toBe(5.4);  // 2′ + √(0,7·(3²+1²) + 0,3·(3+1)²) = 2′ + 3,4′
     expect(a1.restoMedianoMin).toBe(-2);
     expect(a1.giudizio).toBe("insufficiente");
   });
@@ -120,7 +135,7 @@ describe("il delta finale", () => {
     const e = esitiCorse(corse, o);
     const r = e.find(x => x.tripId === "R08:10:00")!;
     expect(r.deltaFinaleMin).toBe(11);
-    expect(r.ritardoP85Min).toBe(3);
+    expect(r.ritardoP85Min).toBe(2.5);
     expect(r.giudizio).toBe("assorbe");
   });
 
