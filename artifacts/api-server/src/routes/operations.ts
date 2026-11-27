@@ -31,6 +31,8 @@ import { analizzaPercorrenze, coperturaFermate, type CorsaOsservata } from "../l
 import { storicoCorsa } from "../lib/segment-history";
 import { quadroCopertura, scalaIntervalli } from "../lib/coverage-history";
 import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
+import { leggiTratte } from "../lib/tratte-osservate-db";
+import { SOSTA_NORMALE_S, RAGGIO_SOSTA_M, giornateFinestra, classiDelleGiornate } from "../lib/tratte-osservate";
 import {
   rilevaAnomalie, riepiloga, ETICHETTE,
   sogliaFuoriPercorso, distanzaDalPercorso,
@@ -735,10 +737,46 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
   }
 });
 
+// ── Il calendario con cui si classificano le giornate ───────────────────────
+// Quello del progetto indicato nell'indirizzo (?psProjectId), altrimenti
+// l'unico compilato, altrimenti il calendario civile. UNO per corse, tratte e
+// storico: tre risposte diverse sulla stessa domanda sarebbero peggio di
+// nessuna risposta. La classificazione è pura e si calcola una volta per data.
+async function calendarioDellaRichiesta(req: { query: Record<string, unknown> }) {
+  const richiesto = String(req.query.psProjectId ?? "") || null;
+  const scoperto = richiesto ? null : await calendarioPredefinito();
+  const psProjectId = richiesto ?? scoperto?.projectId ?? null;
+  let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
+  let profiloCaricato = false;
+  if (psProjectId && UUID_RE.test(psProjectId)) {
+    try { profilo = await loadCalendarProfile(psProjectId); profiloCaricato = true; }
+    catch { /* profilo non leggibile: si resta sul calendario civile */ }
+  }
+  const cacheClassi = new Map<string, { key: string; label: string }>();
+  const classifica = (day: string) => {
+    let c = cacheClassi.get(day);
+    if (!c) {
+      const d = classifyDate(day, profilo);
+      c = { key: d.key, label: d.label };
+      cacheClassi.set(day, c);
+    }
+    return c;
+  };
+  const scelto: "indicato" | "riconosciuto" | "assente" =
+    richiesto ? "indicato" : (scoperto?.projectId ? "riconosciuto" : "assente");
+  return { richiesto, scoperto, psProjectId, profiloCaricato, classifica, scelto };
+}
+
 // ── GET /operations/runtimes — tempi di percorrenza automatici per tratta ────
-// Dai transiti reali AVM: coppie di fermate consecutive della stessa corsa →
-// tempo osservato (mediana e p85) vs programmato, aggregato per linea+tratta.
-// È la base per la ritaratura degli orari (TTD).
+// Dai passaggi SIRI, col calcolo unico (lib/tratte-osservate): coppie di
+// fermate consecutive della stessa corsa → tempo osservato (mediana e p85)
+// contro programmato, per linea e tratta, con la sosta di regolazione tolta.
+// È la base per la ritaratura degli orari (TTD, Planning Studio).
+//   ?days=1..90           finestra (default 14)
+//   ?classe=<chiave>      solo le giornate di quel tipo (scuole aperte feriale,
+//                         domenica…); "prevalente" = il tipo più frequente
+//                         nella finestra; assente o "tutte" = tutte le giornate
+//   ?routeId ?hourFrom ?hourTo ?psProjectId (calendario aziendale)
 router.get("/operations/runtimes", async (req, res): Promise<void> => {
   try {
     if (!(await caronteAvailable())) {
@@ -747,101 +785,92 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
     }
     const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
     const routeId = String(req.query.routeId ?? "") || null;
-    const fSt = (await soloSiri("st")).filtro;
     const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
     const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
     const feedId = await resolveFeedId(req);
 
-    const q = await db.execute<any>(sql`
-      /* "Consecutive" secondo il FEED, non secondo il numero: la specifica
-       * GTFS ammette stop_sequence 10, 20, 30, e con quelli "seq = prev + 1"
-       * non era mai vero — la tabella per tratta restava vuota con migliaia
-       * di transiti. Si ranca la sequenza programmata e si confrontano i
-       * ranghi. */
-      WITH prog AS (
-        SELECT trip_id, stop_sequence,
-               DENSE_RANK() OVER (PARTITION BY trip_id ORDER BY stop_sequence) AS rango
-          FROM gtfs_stop_times
-         WHERE ${feedId}::text IS NOT NULL AND feed_id = ${feedId}::uuid
-      ),
-      seq AS (
-        SELECT st.trip_id, st.route_id, st.stop_id, st.stop_seq, st.actual_ts, st.scheduled,
-               COALESCE(p.rango, st.stop_seq) AS rango,
-               LAG(st.stop_id)   OVER w AS prev_stop,
-               LAG(st.actual_ts) OVER w AS prev_ts,
-               LAG(st.scheduled) OVER w AS prev_sched,
-               LAG(COALESCE(p.rango, st.stop_seq)) OVER w AS prev_rango
-        FROM caronte.stop_transits st
-        LEFT JOIN prog p ON p.trip_id = st.trip_id AND p.stop_sequence = st.stop_seq
-        WHERE ${fSt}
-          AND st.actual_ts > now() - (${days} * interval '1 day')
-          AND st.stop_seq IS NOT NULL
-          AND (${routeId}::text IS NULL OR st.route_id = ${routeId})
-        WINDOW w AS (PARTITION BY st.trip_id, st.vehicle_id, ${giornataDi(sql`st.actual_ts`)} ORDER BY st.stop_seq)
-      ),
-      pairs AS (
-        SELECT route_id, prev_stop AS from_stop, stop_id AS to_stop,
-               EXTRACT(EPOCH FROM actual_ts - prev_ts) AS obs_s,
-               -- scheduled è testo HH:MM:SS (anche >24h): differenza in secondi
-               CASE WHEN scheduled IS NOT NULL AND prev_sched IS NOT NULL THEN
-                 (split_part(scheduled,  ':', 1)::int * 3600
-                + split_part(scheduled,  ':', 2)::int * 60
-                + COALESCE(NULLIF(split_part(scheduled,  ':', 3), ''), '0')::int)
-               - (split_part(prev_sched, ':', 1)::int * 3600
-                + split_part(prev_sched, ':', 2)::int * 60
-                + COALESCE(NULLIF(split_part(prev_sched, ':', 3), ''), '0')::int)
-               END AS sched_s
-        FROM seq
-        WHERE prev_stop IS NOT NULL
-          AND rango = prev_rango + 1
-          AND EXTRACT(EPOCH FROM actual_ts - prev_ts) BETWEEN 5 AND 3600
-          AND (${hourFrom}::int IS NULL OR ${oraDi(sql`prev_ts`)} >= ${hourFrom})
-          AND (${hourTo}::int IS NULL OR ${oraDi(sql`prev_ts`)} < ${hourTo})
-      )
-      SELECT p.route_id, p.from_stop, p.to_stop,
-             COUNT(*)::int AS samples,
-             percentile_cont(0.5)  WITHIN GROUP (ORDER BY p.obs_s) AS obs_median_s,
-             percentile_cont(0.85) WITHIN GROUP (ORDER BY p.obs_s) AS obs_p85_s,
-             AVG(p.sched_s) FILTER (WHERE p.sched_s IS NOT NULL AND p.sched_s >= 0) AS sched_s,
-             r.route_short_name, r.route_color,
-             sf.stop_name AS from_name, st2.stop_name AS to_name
-      FROM pairs p
-      LEFT JOIN gtfs_routes r
-        ON ${feedId}::text IS NOT NULL AND r.feed_id = ${feedId}::uuid AND r.route_id = p.route_id
-      LEFT JOIN gtfs_stops sf
-        ON ${feedId}::text IS NOT NULL AND sf.feed_id = ${feedId}::uuid AND sf.stop_id = p.from_stop
-      LEFT JOIN gtfs_stops st2
-        ON ${feedId}::text IS NOT NULL AND st2.feed_id = ${feedId}::uuid AND st2.stop_id = p.to_stop
-      GROUP BY p.route_id, p.from_stop, p.to_stop,
-               r.route_short_name, r.route_color, sf.stop_name, st2.stop_name
-      HAVING COUNT(*) >= 3
-      ORDER BY r.route_short_name NULLS LAST, samples DESC
-      LIMIT 1500
-    `);
+    /* Il tipo di giornata: mediare un feriale scolastico con una domenica
+     * non descrive nessuno dei due. Si sceglie sulle date del calendario,
+     * prima di leggere: la query lavora solo sulle giornate di quel tipo. */
+    const cal = await calendarioDellaRichiesta(req);
+    const finestra = giornateFinestra(giornataOggi(new Date(), OPERATOR_TZ), days);
+    const classi = classiDelleGiornate(finestra, cal.classifica);
+    const richiesta = String(req.query.classe ?? "").trim().slice(0, 80);
+    const scelta = richiesta === "prevalente" ? (classi[0] ?? null)
+      : richiesta && richiesta !== "tutte" ? (classi.find(c => c.key === richiesta) ?? null)
+      : null;
+    if (richiesta && richiesta !== "tutte" && richiesta !== "prevalente" && !scelta) {
+      res.status(400).json({ error: `tipo di giornata «${richiesta}» assente nella finestra`, classi: classi.map(c => c.key) });
+      return;
+    }
+
+    const lettura = await leggiTratte({
+      date: scelta ? scelta.giorni : finestra,
+      routeId, oraDa: hourFrom, oraA: hourTo,
+      perLinea: true, minCampioni: 3, limite: 1500, feedId,
+    });
+
+    /* I nomi dal feed: una lettura sola per tutte le linee e fermate. */
+    const linee = [...new Set(lettura.tratte.map(t => t.linea).filter((x): x is string => !!x))];
+    const fermate = [...new Set(lettura.tratte.flatMap(t => [t.da, t.a]))];
+    const nomiLinee = new Map<string, { short: string | null; color: string | null }>();
+    const nomiFermate = new Map<string, string | null>();
+    if (feedId && linee.length > 0) {
+      const rq = await db.execute<any>(sql`
+        SELECT route_id, route_short_name, route_color FROM gtfs_routes
+         WHERE feed_id = ${feedId}::uuid AND route_id = ANY(string_to_array(${linee.join("\u001f")}, chr(31)))`);
+      for (const r of rq.rows as any[]) nomiLinee.set(String(r.route_id), { short: r.route_short_name ?? null, color: r.route_color ?? null });
+    }
+    if (feedId && fermate.length > 0) {
+      const fq = await db.execute<any>(sql`
+        SELECT stop_id, stop_name FROM gtfs_stops
+         WHERE feed_id = ${feedId}::uuid AND stop_id = ANY(string_to_array(${fermate.join("\u001f")}, chr(31)))`);
+      for (const r of fq.rows as any[]) nomiFermate.set(String(r.stop_id), r.stop_name ?? null);
+    }
+
+    const segments = lettura.tratte.map(t => {
+      const obsMed = Math.round(t.medianaS);
+      const sched = t.programmatoS;
+      const nome = t.linea ? nomiLinee.get(t.linea) : undefined;
+      return {
+        routeId: t.linea,
+        routeShortName: nome?.short ?? null,
+        routeColor: nome?.color ?? null,
+        fromStopId: t.da,
+        fromStopName: nomiFermate.get(t.da) ?? null,
+        toStopId: t.a,
+        toStopName: nomiFermate.get(t.a) ?? null,
+        samples: t.n,
+        giornate: t.giorni,
+        schedSeconds: sched,
+        obsMedianSeconds: obsMed,
+        obsP85Seconds: Math.round(t.p85S),
+        deltaSeconds: sched != null ? obsMed - sched : null,
+        deltaPct: sched != null && sched > 0 ? Math.round(((obsMed - sched) / sched) * 1000) / 10 : null,
+        /* la sosta di regolazione tolta alla fermata di partenza */
+        sostaTolta: t.sosta,
+      };
+    }).sort((a, b) =>
+      String(a.routeShortName ?? "~").localeCompare(String(b.routeShortName ?? "~"), "it", { numeric: true })
+      || b.samples - a.samples);
 
     res.json({
       caronteAvailable: true,
       days, routeId, hourFrom, hourTo,
-      segments: q.rows.map((s: any) => {
-        const obsMed = s.obs_median_s != null ? Math.round(Number(s.obs_median_s)) : null;
-        const sched = s.sched_s != null ? Math.round(Number(s.sched_s)) : null;
-        return {
-          routeId: s.route_id,
-          routeShortName: s.route_short_name,
-          routeColor: s.route_color,
-          fromStopId: s.from_stop,
-          fromStopName: s.from_name,
-          toStopId: s.to_stop,
-          toStopName: s.to_name,
-          samples: s.samples,
-          schedSeconds: sched,
-          obsMedianSeconds: obsMed,
-          obsP85Seconds: s.obs_p85_s != null ? Math.round(Number(s.obs_p85_s)) : null,
-          deltaSeconds: obsMed != null && sched != null ? obsMed - sched : null,
-          deltaPct: obsMed != null && sched != null && sched > 0
-            ? Math.round(((obsMed - sched) / sched) * 1000) / 10 : null,
-        };
-      }),
+      classe: scelta ? { key: scelta.key, label: scelta.label, giornate: scelta.giorni.length } : null,
+      classi: classi.map(c => ({ key: c.key, label: c.label, giornate: c.giorni.length })),
+      validita: {
+        psProjectId: cal.psProjectId ?? undefined,
+        profiloCaricato: cal.profiloCaricato,
+        scelto: cal.scelto,
+      },
+      regole: {
+        sostaNormaleS: SOSTA_NORMALE_S,
+        raggioSostaM: RAGGIO_SOSTA_M,
+        sosta: `la sosta alla fermata di partenza del tratto resta fino a ${SOSTA_NORMALE_S}″; oltre è regolazione e si toglie, misurandola sul GPS entro ${RAGGIO_SOSTA_M} m`,
+      },
+      fonte: lettura.soloSiri ? "SIRI" : "transiti AVM (origine non distinta)",
+      segments,
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));
@@ -940,27 +969,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
      * calendario compilato: passarlo a mano era possibile e non lo faceva
      * nessuno, e ogni verdetto usciva classificato col solo calendario
      * civile — agosto trattato come un feriale scolastico qualunque. */
-    const richiesto = String(req.query.psProjectId ?? "") || null;
-    const scoperto = richiesto ? null : await calendarioPredefinito();
-    const psProjectId = richiesto ?? scoperto?.projectId ?? null;
-    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
-    let profiloCaricato = false;
-    if (psProjectId && UUID_RE.test(psProjectId)) {
-      try { profilo = await loadCalendarProfile(psProjectId); profiloCaricato = true; }
-      catch { /* profilo non leggibile: si resta sul calendario civile */ }
-    }
-    /* La classificazione è pura e costosa quanto basta: una data ricorre su
-     * centinaia di corse, quindi si calcola una volta sola. */
-    const cacheClassi = new Map<string, { key: string; label: string }>();
-    const classifica = (day: string) => {
-      let c = cacheClassi.get(day);
-      if (!c) {
-        const d = classifyDate(day, profilo);
-        c = { key: d.key, label: d.label };
-        cacheClassi.set(day, c);
-      }
-      return c;
-    };
+    const { richiesto, scoperto, psProjectId, profiloCaricato, classifica } = await calendarioDellaRichiesta(req);
 
     /** Anagrafica della corsa: uguale su tutte le sue giornate. */
     const anagrafica = new Map<string, any>();
@@ -2123,25 +2132,7 @@ router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promis
      * calendario compilato: passarlo a mano era possibile e non lo faceva
      * nessuno, e ogni verdetto usciva classificato col solo calendario
      * civile — agosto trattato come un feriale scolastico qualunque. */
-    const richiesto = String(req.query.psProjectId ?? "") || null;
-    const scoperto = richiesto ? null : await calendarioPredefinito();
-    const psProjectId = richiesto ?? scoperto?.projectId ?? null;
-    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
-    let profiloCaricato = false;
-    if (psProjectId && UUID_RE.test(psProjectId)) {
-      try { profilo = await loadCalendarProfile(psProjectId); profiloCaricato = true; }
-      catch { /* profilo non leggibile: si resta sul calendario civile */ }
-    }
-    const cacheClassi = new Map<string, { key: string; label: string }>();
-    const classifica = (day: string) => {
-      let c = cacheClassi.get(day);
-      if (!c) {
-        const d = classifyDate(day, profilo);
-        c = { key: d.key, label: d.label };
-        cacheClassi.set(day, c);
-      }
-      return c;
-    };
+    const { richiesto, scoperto, psProjectId, profiloCaricato, classifica } = await calendarioDellaRichiesta(req);
 
     const giorno = (v: any) => comeGiorno(v);
 

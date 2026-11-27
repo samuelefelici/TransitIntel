@@ -72,6 +72,18 @@ describe("Osservato", () => {
     expect(o.per(null, "2", 8)).toBeNull();
   });
 
+  it("con l'ora scarsa usa la sua fascia oraria (la punta non è la morbida), poi la giornata", () => {
+    const o = new Osservato();
+    o.aggiungi("1", "2", 8, stat(500, 600, CAMPIONI_MINIMI - 1));   // le 8: pochi campioni
+    o.aggiungiFascia("1", "2", "punta_mattino", stat(150, 190));     // 6–9
+    o.aggiungiFascia("1", "2", "morbida", stat(90, 110));            // 9–13
+    o.aggiungi("1", "2", null, stat(110, 140));
+    expect(o.per("1", "2", 8)).toMatchObject({ medianaS: 150, fonte: "fascia" });
+    expect(o.per("1", "2", 10)).toMatchObject({ medianaS: 90, fonte: "fascia" });
+    // la sera non ha fascia: giornata
+    expect(o.per("1", "2", 20)).toMatchObject({ medianaS: 110, fonte: "giornata" });
+  });
+
   it("la fascia peggiore è quella con lo scarto più grande, fra quelle con dati", () => {
     const o = new Osservato();
     o.aggiungi("1", "2", 8, stat(100, 130));
