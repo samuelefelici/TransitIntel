@@ -2391,6 +2391,10 @@ exports[`turni macchina e VCSP, sul database > il giro VCSP di Argos fino allo s
     "penaltyAnchor": "best",
     "penaltyStep": 0.5,
     "probes": 0,
+    "profiliRegole": {
+      "crew": null,
+      "vsp": null,
+    },
     "rounds": 2,
     "routes": 2,
     "seedFromBest": true,
