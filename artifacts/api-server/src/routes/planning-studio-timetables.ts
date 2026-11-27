@@ -23,6 +23,13 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { mergeStopPatterns } from "../lib/timetable-merge";
 import { versioniDelProgetto, seVersione, idNellaVersione, lineeDelProgetto } from "../lib/versioni-pubblicate";
+import { getLatestFeedId } from "./gtfs-helpers";
+import { giornataOggi } from "../lib/service-day";
+import { leggiOsservato } from "../lib/percorrenze-reali-db";
+import {
+  secondi, giorniOsservati, tipoPerGiornoTipo, esitiCorse, trattiENodi, riepilogoCorse,
+  CAMPIONI_MINIMI, MARGINE_S, STESSO_CAPOLINEA_M, type CorsaProgetto, type TipoGiorno,
+} from "../lib/percorrenze-reali";
 
 const router: IRouter = Router();
 
@@ -860,6 +867,120 @@ router.get("/settings/timetable-map-domain", async (_req, res): Promise<void> =>
     } catch { domain = null; }
   }
   res.json({ domain });
+});
+
+// ── GET /timetables/route/:routeId/percorrenze-reali ────────────────────────
+// Programmato contro reale (transiti SIRI/AVM) per tratto e per nodo, e per
+// ogni corsa il delta finale al capolinea contro il ritardo che si porta.
+// Il calcolo è in lib/percorrenze-reali.ts; qui si leggono le corse con le
+// stesse regole di validità del quadro orario.
+//   ?dayTypeId=uuid  corse di quel giorno-tipo (consigliato)
+//   ?giorni=1..180   finestra osservata (default 91)
+//   ?tipoGiorno=festivo|sabato|feriale  giorni da osservare (default: dal giorno-tipo)
+router.get("/planning-studio/:projectId/timetables/route/:routeId/percorrenze-reali", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    const routeId = String(req.params.routeId);
+    if (!UUID_RE.test(projectId) || !UUID_RE.test(routeId)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
+    const dayTypeId = parseDayTypeId(req.query.dayTypeId);
+    const giorni = Math.min(180, Math.max(1, Math.round(Number(req.query.giorni) || 91)));
+
+    const routeQ = await db.execute<any>(sql`
+      SELECT id, short_name, long_name FROM ps_routes
+       WHERE project_id = ${projectId}::uuid AND id = ${routeId}::uuid LIMIT 1`);
+    const route = routeQ.rows[0];
+    if (!route) { res.status(404).json({ error: "Linea non trovata" }); return; }
+
+    let dayType: { id: string; code: string | null; name: string | null } | null = null;
+    if (dayTypeId) {
+      const d = await db.execute<any>(sql`
+        SELECT id, code, name FROM ps_day_types
+         WHERE id = ${dayTypeId}::uuid AND (project_id IS NULL OR project_id = ${projectId}::uuid) LIMIT 1`);
+      if (!d.rows[0]) { res.status(404).json({ error: "Giorno-tipo non trovato" }); return; }
+      dayType = { id: d.rows[0].id, code: d.rows[0].code ?? null, name: d.rows[0].name ?? null };
+    }
+    const tq = String(req.query.tipoGiorno ?? "");
+    const tipo: TipoGiorno = tq === "festivo" || tq === "sabato" || tq === "feriale"
+      ? tq : tipoPerGiornoTipo(dayType?.code ?? dayType?.name);
+
+    const hasValidity = await projectHasTripValidity(projectId);
+    const { clause: valClause, note } = tripValidityClause(dayTypeId, hasValidity);
+    const rowsQ = await db.execute<any>(sql.raw(`
+      SELECT t.id AS trip_id, t.variant_id, t.direction,
+             st.stop_seq, st.arrival_time, st.departure_time,
+             s.id AS stop_id, s.gtfs_id, s.name AS stop_name, s.cluster_id, s.lat, s.lon
+        FROM ps_trips t
+        JOIN ps_stop_times st ON st.trip_id = t.id
+        JOIN ps_stops s ON s.id = st.stop_id
+       WHERE t.project_id = '${projectId}' AND t.route_id = '${routeId}'
+         AND COALESCE(t.is_active, true) = true
+         ${valClause}
+       ORDER BY t.id, st.stop_seq
+    `));
+    const perCorsa = new Map<string, CorsaProgetto>();
+    for (const r of rowsQ.rows as any[]) {
+      let c = perCorsa.get(r.trip_id);
+      if (!c) { c = { tripId: r.trip_id, variantId: r.variant_id, direzione: r.direction ?? null, fermate: [] }; perCorsa.set(r.trip_id, c); }
+      c.fermate.push({
+        stopId: r.stop_id, gtfsId: r.gtfs_id ?? null, nome: r.stop_name ?? "", clusterId: r.cluster_id ?? null,
+        lat: r.lat != null ? Number(r.lat) : null, lon: r.lon != null ? Number(r.lon) : null,
+        arrivoS: secondi(r.arrival_time), partenzaS: secondi(r.departure_time),
+      });
+    }
+    const corse = [...perCorsa.values()];
+
+    const coppie = new Map<string, { da: string; a: string }>();
+    let senzaCodice = 0;
+    for (const c of corse) {
+      for (let i = 0; i + 1 < c.fermate.length; i++) {
+        const da = c.fermate[i].gtfsId, a = c.fermate[i + 1].gtfsId;
+        if (!da || !a) { senzaCodice++; continue; }
+        coppie.set(`${da}>${a}`, { da, a });
+      }
+    }
+    const date = giorniOsservati(tipo, giornataOggi(), giorni);
+    const lettura = await leggiOsservato([...coppie.values()], date, await getLatestFeedId(req));
+
+    const variantIds = [...new Set(corse.map(c => c.variantId))];
+    const vList = uuidList(variantIds);
+    const varianti = vList
+      ? (await db.execute<any>(sql.raw(`SELECT id, name, code, direction FROM ps_route_variants WHERE id IN (${vList})`))).rows as any[]
+      : [];
+    const esiti = esitiCorse(corse, lettura.osservato);
+    res.json({
+      linea: { id: route.id, codice: route.short_name, nome: route.long_name },
+      giornoTipo: dayType ? { id: dayType.id, nome: dayType.name } : null,
+      notaValidita: note,
+      osservazione: {
+        tipoGiorno: tipo, giorniRichiesti: giorni, giorniDelTipo: date.length,
+        dal: date.length ? date[date.length - 1] : null, al: date.length ? date[0] : null,
+        fonte: lettura.soloSiri ? "SIRI" : "transiti AVM (origine non distinta)",
+        disponibile: lettura.disponibile, transitiUsati: lettura.transiti,
+        trattiSenzaFermataGtfs: senzaCodice,
+      },
+      regole: {
+        campioniMinimi: CAMPIONI_MINIMI, margineMin: MARGINE_S / 60, stessoCapolineaEntroM: STESSO_CAPOLINEA_M,
+        reale: "mediana e 85° percentile dei tratti percorsi di seguito da qualunque linea, all'ora della corsa (o della giornata se l'ora ha pochi dati)",
+        deltaFinale: "attesa al capolinea fino alla prossima partenza della STESSA linea dallo stesso capolinea (stessa fermata, stesso nodo o entro 250 m); i concatenamenti fra linee li dicono i turni macchina",
+        giudizio: "assorbe = il delta copre il ritardo dell'85° percentile con 2′ di margine; al_limite = copre solo il ritardo mediano; insufficiente = nemmeno quello; rientro = nessuna corsa dopo",
+      },
+      varianti: variantIds.map(vid => {
+        const v = varianti.find(x => x.id === vid);
+        const cv = corse.filter(c => c.variantId === vid);
+        const { tratti, nodi, coperturaPct } = trattiENodi(cv, lettura.osservato);
+        return {
+          variantId: vid, nome: v?.name ?? null, codice: v?.code ?? null, direzione: v?.direction ?? null,
+          corse: cv.length, coperturaTrattiPct: coperturaPct, tratti, nodi,
+        };
+      }),
+      corse: esiti,
+      riepilogo: riepilogoCorse(esiti),
+    });
+  } catch (e: any) {
+    console.warn("[percorrenze-reali]", e?.message || e);
+    res.status(500).json({ error: "analisi delle percorrenze non riuscita" });
+  }
 });
 
 export default router;
