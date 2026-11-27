@@ -21,6 +21,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { italianHolidays } from "./day-classifier";
+import { fasciaDi } from "./tratte-osservate";
 
 /** Sotto questi campioni un tratto (o una fascia oraria) non fa statistica. */
 export const CAMPIONI_MINIMI = 5;
@@ -87,24 +88,40 @@ export function tipoPerGiornoTipo(codice: string | null | undefined): TipoGiorno
 
 /* ── Le statistiche osservate ─────────────────────────────────────────── */
 
-export interface StatTratto { n: number; giorni: number; medianaS: number; p85S: number }
+export interface StatTratto {
+  n: number; giorni: number; medianaS: number; p85S: number;
+  /** la sosta di regolazione tolta dal tratto (calcolo unico, tratte-osservate) */
+  sosta?: { corse: number; medianaS: number } | null;
+}
 
-/** Statistiche per coppia (da→a), per ora di partenza dalla prima fermata e
- *  su tutta la giornata. Chiave: `${da}>${a}`. */
+/** Da dove viene il numero usato per un tratto: l'ora della corsa, la sua
+ *  fascia oraria (punta, morbida…) o tutta la giornata. */
+export type FonteTratto = "ora" | "fascia" | "giornata";
+
+/** Statistiche per coppia (da→a): per ora di partenza dalla prima fermata,
+ *  per fascia oraria e su tutta la giornata. Chiave: `${da}>${a}`. */
 export class Osservato {
   private perOra = new Map<string, StatTratto>();
+  private perFascia = new Map<string, StatTratto>();
   private perGiorno = new Map<string, StatTratto>();
   aggiungi(da: string, a: string, ora: number | null, s: StatTratto): void {
     if (ora == null) this.perGiorno.set(`${da}>${a}`, s);
     else this.perOra.set(`${da}>${a}@${ora}`, s);
   }
+  aggiungiFascia(da: string, a: string, fascia: string, s: StatTratto): void {
+    this.perFascia.set(`${da}>${a}#${fascia}`, s);
+  }
   /** La statistica da usare per un tratto percorso a quell'ora: quella
-   *  dell'ora se ha abbastanza campioni, altrimenti quella della giornata. */
-  per(da: string | null, a: string | null, ora: number | null): (StatTratto & { fonte: "ora" | "giornata" }) | null {
+   *  dell'ora se ha abbastanza campioni, poi quella della sua fascia oraria
+   *  (le ore di punta non si confondono con la morbida), e solo in ultimo
+   *  quella della giornata. */
+  per(da: string | null, a: string | null, ora: number | null): (StatTratto & { fonte: FonteTratto }) | null {
     if (!da || !a) return null;
     if (ora != null) {
       const h = this.perOra.get(`${da}>${a}@${ora}`);
       if (h && h.n >= CAMPIONI_MINIMI) return { ...h, fonte: "ora" };
+      const f = this.perFascia.get(`${da}>${a}#${fasciaDi(ora)}`);
+      if (f && f.n >= CAMPIONI_MINIMI) return { ...f, fonte: "fascia" };
     }
     const g = this.perGiorno.get(`${da}>${a}`);
     return g && g.n >= CAMPIONI_MINIMI ? { ...g, fonte: "giornata" } : null;

@@ -7,7 +7,7 @@
  * "fuori soglia" (osservato >> programmato) sono quelle da ritarare nel
  * TTD / Planner Studio.
  */
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle, CheckCircle2, Clock, Download, Gauge, Loader2,
@@ -28,15 +28,25 @@ interface RuntimeSegment {
   toStopId: string | null;
   toStopName: string | null;
   samples: number;
+  /** giornate osservate (del tipo scelto) */
+  giornate?: number;
   schedSeconds: number | null;
   obsMedianSeconds: number | null;
   obsP85Seconds: number | null;
   deltaSeconds: number | null;
   deltaPct: number | null;
+  /** la sosta di regolazione tolta alla fermata di partenza (dal GPS) */
+  sostaTolta?: { corse: number; medianaS: number } | null;
 }
+interface ClasseGiornata { key: string; label: string; giornate: number }
 interface RuntimesResp {
   caronteAvailable: boolean;
   days: number;
+  /** il tipo di giornata letto (null = tutte le giornate) */
+  classe?: ClasseGiornata | null;
+  /** i tipi di giornata della finestra, dal più frequente */
+  classi?: ClasseGiornata[];
+  regole?: { sostaNormaleS: number; raggioSostaM: number; sosta: string };
   segments: RuntimeSegment[];
 }
 interface GtfsRoute { routeId: string; routeShortName: string | null; routeLongName: string | null }
@@ -191,6 +201,10 @@ export default function RuntimesPage() {
   const [band, setBand] = useState(0);
   // classificazione richiesta: Linea → Percorso → Corsa (vista default) + per tratta
   const [view, setView] = useState<"corse" | "tratte">("corse");
+  /* Il tipo di giornata delle tratte: «prevalente» la prima volta (il
+     server sceglie il tipo più frequente della finestra), poi quello scelto.
+     «tutte» mescola feriali e domeniche: c'è, ma non è il default. */
+  const [classe, setClasse] = useState("prevalente");
   const [openRoutes, setOpenRoutes] = useState<Set<string>>(new Set());
   const [openTrip, setOpenTrip] = useState<string | null>(null);
 
@@ -205,11 +219,19 @@ export default function RuntimesPage() {
   if (routeId) qs.set("routeId", routeId);
   if (b.hourFrom != null) { qs.set("hourFrom", String(b.hourFrom)); qs.set("hourTo", String(b.hourTo)); }
 
+  const qsTratte = new URLSearchParams(qs);
+  qsTratte.set("classe", classe);
   const dataQ = useQuery({
-    queryKey: ["runtimes", days, routeId, band],
-    queryFn: () => apiFetch<RuntimesResp>(`/api/operations/runtimes?${qs.toString()}`),
+    queryKey: ["runtimes", days, routeId, band, classe],
+    queryFn: () => apiFetch<RuntimesResp>(`/api/operations/runtimes?${qsTratte.toString()}`),
     enabled: view === "tratte",
   });
+  /* Il tipo scelto non esiste più nella nuova finestra (es. da 30 a 7 giorni
+     senza domeniche): si torna al prevalente invece di restare a vuoto. */
+  useEffect(() => {
+    if (classe === "prevalente" || classe === "tutte" || !dataQ.data?.classi) return;
+    if (!dataQ.data.classi.some(c => c.key === classe)) setClasse("prevalente");
+  }, [dataQ.data, classe]);
 
   const byTripQ = useQuery({
     queryKey: ["runtimes-trip", days, routeId, band],
@@ -267,11 +289,12 @@ export default function RuntimesPage() {
   }, [routesQ.data]);
 
   function exportCsv() {
-    const head = "linea;da;a;campioni;programmato_s;osservato_mediana_s;osservato_p85_s;delta_s;delta_pct";
+    const tipo = dataQ.data?.classe?.label ?? "tutte le giornate";
+    const head = "tipo_giornata;linea;da;a;campioni;programmato_s;osservato_mediana_s;osservato_p85_s;delta_s;delta_pct;sosta_tolta_corse;sosta_tolta_mediana_s";
     const rows = segments.map(s => [
-      s.routeShortName ?? s.routeId, s.fromStopName ?? s.fromStopId, s.toStopName ?? s.toStopId,
+      tipo, s.routeShortName ?? s.routeId, s.fromStopName ?? s.fromStopId, s.toStopName ?? s.toStopId,
       s.samples, s.schedSeconds ?? "", s.obsMedianSeconds ?? "", s.obsP85Seconds ?? "",
-      s.deltaSeconds ?? "", s.deltaPct ?? "",
+      s.deltaSeconds ?? "", s.deltaPct ?? "", s.sostaTolta?.corse ?? "", s.sostaTolta?.medianaS ?? "",
     ].join(";"));
     const blob = new Blob([[head, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -504,6 +527,25 @@ export default function RuntimesPage() {
       )}
 
       {view === "tratte" && (<>
+      {/* Il tipo di giornata delle tratte: un tratto feriale scolastico e lo
+          stesso tratto di domenica sono due numeri diversi. */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <label className="text-muted-foreground">Tipo di giornata</label>
+        <select value={classe} onChange={e => setClasse(e.target.value)}
+          className="px-3 py-2 rounded-lg bg-card border border-border/60 text-sm min-w-64">
+          <option value="prevalente">
+            {dataQ.data?.classe && classe === "prevalente" ? `${dataQ.data.classe.label} (il più frequente)` : "Il più frequente"}
+          </option>
+          {(dataQ.data?.classi ?? []).map(c => (
+            <option key={c.key} value={c.key}>{c.label} · {c.giornate} giornate</option>
+          ))}
+          <option value="tutte">Tutte le giornate (mescolate)</option>
+        </select>
+        {dataQ.data?.classe && (
+          <span className="text-muted-foreground">{dataQ.data.classe.giornate} giornate nella finestra</span>
+        )}
+      </div>
+
       {/* KPI sintesi */}
       <div className="flex flex-wrap gap-2 text-[11px]">
         <span className="px-3 py-1.5 rounded-lg bg-white/5 border border-border/50 flex items-center gap-1.5">
@@ -547,6 +589,10 @@ export default function RuntimesPage() {
                 <th className="px-3 py-2 border-b border-border/50 text-right">Osservato (mediana)</th>
                 <th className="px-3 py-2 border-b border-border/50 text-right">p85</th>
                 <th className="px-3 py-2 border-b border-border/50 text-right">Δ</th>
+                <th className="px-3 py-2 border-b border-border/50 text-right"
+                    title="La sosta alla fermata di partenza oltre il minuto è regolazione, non viaggio: è tolta dall'osservato">
+                  Sosta tolta
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -572,6 +618,10 @@ export default function RuntimesPage() {
                         style={{ color: deltaColor(s.deltaPct) }}>
                       {s.deltaPct != null ? `${s.deltaPct > 0 ? "+" : ""}${s.deltaPct}%` : "—"}
                     </td>
+                    <td className="px-3 py-1.5 border-b border-border/20 text-right font-mono text-muted-foreground"
+                        title={s.sostaTolta ? `Su ${s.sostaTolta.corse} corse su ${s.samples} il bus è rimasto alla fermata oltre il minuto: tolti in mediana ${fmtSec(s.sostaTolta.medianaS)}` : undefined}>
+                      {s.sostaTolta ? `−${fmtSec(s.sostaTolta.medianaS)} · ${s.sostaTolta.corse}` : "—"}
+                    </td>
                   </tr>
                 ))}
             </tbody>
@@ -582,6 +632,7 @@ export default function RuntimesPage() {
       <p className="text-[11px] text-muted-foreground">
         🔴 osservato &gt;20% oltre il programmato: tratta da ri-tempare (orario irrealistico) ·
         🔵 osservato &gt;15% sotto: orario largo, possibile recupero di minuti nel TTD.
+        {dataQ.data?.regole && <> · Sosta tolta: {dataQ.data.regole.sosta}.</>}
       </p>
       </>)}
     </div>

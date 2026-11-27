@@ -26,6 +26,7 @@ import { versioniDelProgetto, seVersione, idNellaVersione, lineeDelProgetto } fr
 import { getLatestFeedId } from "./gtfs-helpers";
 import { giornataOggi } from "../lib/service-day";
 import { leggiOsservato } from "../lib/percorrenze-reali-db";
+import { SOSTA_NORMALE_S, RAGGIO_SOSTA_M } from "../lib/tratte-osservate";
 import {
   secondi, giorniOsservati, tipoPerGiornoTipo, esitiCorse, trattiENodi, riepilogoCorse,
   CAMPIONI_MINIMI, MARGINE_S, STESSO_CAPOLINEA_M, type CorsaProgetto, type TipoGiorno,
@@ -961,10 +962,10 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId/percorrenze-re
       },
       regole: {
         campioniMinimi: CAMPIONI_MINIMI, margineMin: MARGINE_S / 60, stessoCapolineaEntroM: STESSO_CAPOLINEA_M,
-        reale: "mediana e 85° percentile dei tratti percorsi di seguito da qualunque linea, all'ora della corsa (o della giornata se l'ora ha pochi dati)",
+        reale: "mediana e 85° percentile dei tratti percorsi di seguito da qualunque linea, all'ora della corsa; se l'ora ha pochi dati quella della sua fascia oraria (notte 0–6, punta del mattino 6–9, morbida 9–13, pranzo 13–16, punta del pomeriggio 16–19, sera 19–24), e solo in ultimo la giornata",
         deltaFinale: "attesa al capolinea fino alla prossima partenza della STESSA linea dallo stesso capolinea (stessa fermata, stesso nodo o entro 250 m), anche negativa se riparte fino a 3′ prima dell'arrivo; i concatenamenti fra linee li dicono i turni macchina",
         p85Corsa: "mediana della corsa più gli scarti 85°−mediana dei tratti combinati con correlazione 0,3 (né tutti i tratti male insieme, né del tutto indipendenti)",
-        capolinea: "il primo tratto da un capolinea può includere la sosta del bus in partenza: va letto con cautela",
+        sosta: `la sosta alla fermata di partenza del tratto resta fino a ${SOSTA_NORMALE_S}″; oltre è regolazione (il bus aspetta, non viaggia) e si toglie, misurandola sul GPS del mezzo entro ${RAGGIO_SOSTA_M} m dalla fermata: il tratto la dichiara in reale.sosta`,
         giudizio: "assorbe = il delta copre il ritardo dell'85° percentile con 2′ di margine; al_limite = copre solo il ritardo mediano; insufficiente = nemmeno quello; rientro = nessuna corsa dopo",
       },
       varianti: variantIds.map(vid => {
