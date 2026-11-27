@@ -57,6 +57,9 @@ import { AMBITI } from "../lib/lavori/ambiti";
 import { arresto } from "../lib/arresto";
 import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
 import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli, CORSIA_GIRO, TEMPO_MASSIMO_GIRO } from "../lib/ottimizza-veicoli/tempi";
+import { prontoPerScheduler } from "../lib/pronto-scheduler-db";
+import { applicaProfili, profiliDelGiro } from "../lib/profili-regole";
+import { messaggioRifiuto } from "../lib/pronto-scheduler";
 const router: IRouter = Router();
 
 /** true se lo scenario turni macchina è marcato "in esercizio" (soluzione
@@ -1460,6 +1463,27 @@ router.post("/service-program/agent-optimize", async (req, res) => {
             } catch (e: any) {
               req.log.warn(`agent-optimize: riallineamento UDP saltato: ${e?.message ?? e}`);
             }
+            // PRONTO PER LO SCHEDULER: con un errore il giro non parte (UDP che
+            // non ha linee che circolano nei suoi giorni, linee senza tipo di
+            // mezzo, capolinea senza fuorilinea, ritorni senza sosta). I dati
+            // reali qui non si leggono: sono solo avvisi. Fail closed: se il
+            // controllo stesso fallisce, il giro non parte.
+            {
+              const depIds = Array.isArray(b.depotIds) && b.depotIds.length ? b.depotIds.map(String)
+                : Array.isArray(b.depots) && b.depots.length ? b.depots.map((d: any) => String(d?.id ?? "")) : null;
+              let pronto: Awaited<ReturnType<typeof prontoPerScheduler>> = null;
+              try {
+                pronto = await prontoPerScheduler(psProjectId, String(unit.id), { depotIds: depIds, datiReali: false });
+              } catch (e: any) {
+                req.log.error({ err: e?.message }, "agent-optimize: controllo prima del giro fallito");
+                res.status(500).json({ error: "Controllo prima del giro non riuscito: il giro non parte" });
+                return;
+              }
+              if (pronto && !pronto.pronto) {
+                res.status(409).json({ error: messaggioRifiuto(pronto), pronto });
+                return;
+              }
+            }
             let fresh = false;
             if (sp.feed_id && !udpRefresh?.changed) {
               try {
@@ -1682,6 +1706,19 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       }
     }
 
+    // I PROFILI DELLE REGOLE, come la Fucina: azienda, poi progetto, poi
+    // la richiesta (vince). Se non si leggono, il giro parte coi suoi valori
+    // e lo dice nei parametri.
+    let profiliUsati: { vsp: string | null; crew: string | null } | { errore: string } = { vsp: null, crew: null };
+    try {
+      const pr = applicaProfili(runBody, await profiliDelGiro(userId, psProjectId), mode, serviceType);
+      Object.assign(runBody, pr.corpo);
+      profiliUsati = pr.usati;
+    } catch (e: any) {
+      req.log.warn({ err: e?.message }, "agent-optimize: profili delle regole non letti");
+      profiliUsati = { errore: "profili delle regole non letti: valori della richiesta e di default" };
+    }
+
     const job: AgentOptimizeJob = {
       id: randomUUID(),
       userId, psProjectId, mode,
@@ -1692,6 +1729,8 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         date: rawDate, mode, intensity, timeLimit, serviceType,
         routes: routes.length, vehicleSource, feedSource, depots: depotsSel?.length ?? 0,
         ...(udpRefresh ? { udpRefresh } : {}),
+        // quali profili delle regole ha usato il giro (due giri con profili diversi non si confrontano)
+        profiliRegole: profiliUsati,
         ...(mode === "vcsp" ? {
           rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit,
           earlyStopPatience: runBody.vcsp.earlyStopPatience ?? null,

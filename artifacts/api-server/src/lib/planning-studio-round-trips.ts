@@ -62,6 +62,8 @@ export interface RoundTripIssue {
   toStop: string;
   /** capolinea dove il giro si chiude (arrivo dell'andata / partenza del ritorno) */
   terminal: string;
+  /** la fermata di quel capolinea (id del progetto) */
+  terminalStopId?: string;
   /** ritorno trovato (se c'è) */
   returnTripId?: string;
   returnDepartTime?: string;
@@ -127,7 +129,10 @@ async function resolveDayType(projectId: string, dayTypeId: string | null, dayTy
 export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId?: string | null; dayTypeCode?: string | null; minDelta?: number; maxDelta?: number } = {}): Promise<RoundTripAudit> {
   const minDelta = Math.max(0, Math.min(60, Number(opts.minDelta ?? 2) || 0));
   const maxDelta = Math.max(minDelta, Math.min(180, Number(opts.maxDelta ?? 25) || 25));
+  // gli id entrano nel testo SQL qui sotto (sql.raw): si validano qui, non solo nei chiamanti
+  if (!UUID_RE.test(projectId)) throw new Error("computeRoundTripAudit: projectId non valido");
   const dt = await resolveDayType(projectId, opts.dayTypeId ?? null, opts.dayTypeCode ?? null);
+  if (dt.id && !UUID_RE.test(String(dt.id))) throw new Error("computeRoundTripAudit: giorno-tipo non valido");
 
   // Validità per giorno-tipo: solo se il progetto usa la matrice corsa×giorno-tipo
   let valClause = "";
@@ -253,7 +258,7 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
           .sort((a, b) => a.depMin - b.depMin);
         const nxt = returns[0];
         const base = { tripId: t.tripId, variantCode: t.variantCode, direction: t.direction, departTime: hhmm(t.depMin), arriveTime: hhmm(t.arrMin),
-          fromStop: t.firstStopName, toStop: t.lastStopName, terminal: t.lastStopName,
+          fromStop: t.firstStopName, toStop: t.lastStopName, terminal: t.lastStopName, terminalStopId: t.lastStop,
           suggestedDepartTime: hhmm(t.arrMin + minDelta), cadenceDepartTime: alignToCadence(t.arrMin + minDelta, dirIn) };
         if (!nxt) {
           issues.push({ ...base, kind: "missingReturn", note: `arriva a ${t.lastStopName} alle ${hhmm(t.arrMin)} e nessuna corsa di ritorno della linea parte da lì dopo: il bus rientra a vuoto. Aggiungi il ritorno alle ${hhmm(t.arrMin + minDelta)}` });
@@ -272,7 +277,7 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
         if (feeders.length) continue;
         const later = outbound.filter((a) => samePlace(a.lastStop, b.firstStop) && a.arrMin > b.depMin).sort((x, y) => x.arrMin - y.arrMin)[0];
         issues.push({ kind: "orphanReturn", tripId: b.tripId, variantCode: b.variantCode, direction: b.direction, departTime: hhmm(b.depMin), arriveTime: hhmm(b.arrMin),
-          fromStop: b.firstStopName, toStop: b.lastStopName, terminal: b.firstStopName,
+          fromStop: b.firstStopName, toStop: b.lastStopName, terminal: b.firstStopName, terminalStopId: b.firstStop,
           suggestedDepartTime: later ? hhmm(later.arrMin + minDelta) : undefined,
           cadenceDepartTime: later ? alignToCadence(later.arrMin + minDelta, b.direction) : null,
           note: later

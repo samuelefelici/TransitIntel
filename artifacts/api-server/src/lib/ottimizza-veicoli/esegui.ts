@@ -13,6 +13,9 @@ import {
 } from "../dati-solver";
 import { eseguiPython, jsonDallUscita, descriviUscita, type Progresso, type ScriptConsentito } from "../lavori/python";
 import { codificaTurniGuida } from "../azienda";
+import { sosteMinimeDelProgetto } from "../soste-minime-db";
+import { sostePerFermate } from "../soste-minime";
+import { ritardiP85DelleCorse } from "../ritardi-siri";
 import { corrispettivoSuiVuoti } from "../reti-linee";
 import {
   type Advisory, type TripBlock, type VehicleShift, type VehicleType,
@@ -222,6 +225,17 @@ export async function runVcspOrchestrator(
   opz?: OpzioniPython,
 ): Promise<any> {
   return spawnPythonJson("vcsp_orchestrator.py", [], input, logger, "VCSP", opz);
+}
+
+/** Il progetto Planning Studio del giro: quello della richiesta, o quello del progetto di esercizio. */
+async function progettoPsDelGiro(body: any): Promise<string | null> {
+  if (typeof body?.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)) return body.psProjectId;
+  const sp = String(body?.projectId ?? "");
+  if (!/^[0-9a-f-]{36}$/i.test(sp)) return null;
+  try {
+    const r = await db.execute<any>(sql`SELECT planning_studio_project_id::text AS p FROM scheduling_projects WHERE id = ${sp}::uuid`);
+    return (r.rows?.[0]?.p as string | undefined) ?? null;
+  } catch { return null; }
 }
 
 export type DepotPoint = { id: string; name: string; color: string; lat: number; lon: number };
@@ -985,7 +999,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
     // (congestione 40% ≈ 6 min persi per ora di guida). Il solver li usa come
     // buffer δ sul concatenamento (off/media/alta).
     const robustnessLevel = String((body as any).robustness || "off").toLowerCase();
-    let robustnessCfg: { level: string; delayByHour: Record<string, number> } | undefined;
+    let robustnessCfg: { level: string; delayByHour: Record<string, number>; delayByTrip?: Record<string, number>; fonte?: string } | undefined;
     if (robustnessLevel === "media" || robustnessLevel === "alta") {
       const delayByHour: Record<string, number> = {};
       try {
@@ -1000,8 +1014,45 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
           if (d > 0) delayByHour[String(r.h)] = d;
         }
       } catch { /* nessun dato traffico → il solver usa il profilo di default */ }
-      robustnessCfg = { level: robustnessLevel, delayByHour };
+      robustnessCfg = { level: robustnessLevel, delayByHour, fonte: Object.keys(delayByHour).length ? "traffico" : "default" };
       log.info(`VSP robustezza=${robustnessLevel}: profilo ritardi su ${Object.keys(delayByHour).length} fasce orarie${Object.keys(delayByHour).length === 0 ? " (default)" : " (traffico reale)"}`);
+      // Il ritardo VERO di ogni corsa, dai transiti SIRI (calcolo unico delle
+      // percorrenze): vince sul profilo orario; le corse con pochi dati
+      // restano sul profilo. Se SIRI non si legge, si resta sul profilo.
+      const psRob = await progettoPsDelGiro(body);
+      if (psRob) {
+        try {
+          const r = await ritardiP85DelleCorse(psRob, solverBlocks.map(t => t.tripId), String((body as any).date ?? ""));
+          if (r.conDati > 0) {
+            robustnessCfg.delayByTrip = r.ritardi;
+            robustnessCfg.fonte = "siri";
+            log.info(`VSP robustezza: ritardo all'85° SIRI su ${r.conDati}/${r.corse} corse (${r.tipoGiorno}, ${r.transiti} transiti); le altre col profilo orario`);
+          }
+        } catch (e: any) {
+          log.info(`VSP robustezza: ritardi SIRI non letti (${e?.message ?? e}): profilo orario`);
+        }
+      }
+    }
+
+    // 5d-bis. SOSTA MINIMA AL CAPOLINEA: dato della fermata, del nodo o del
+    // progetto (soste-minime.ts). Senza dati il giro resta com'era: 0′ allo
+    // stesso capolinea, 3′ fra fermate diverse.
+    let sostaMinimaCfg: { perFermata: Record<string, number>; predefinitaMin: number | null } | undefined;
+    {
+      const psSoste = await progettoPsDelGiro(body);
+      if (psSoste) {
+        try {
+          const so = await sosteMinimeDelProgetto(psSoste);
+          const perFermata = sostePerFermate(new Set(solverBlocks.map(t => String(t.lastStopId))), so);
+          if (Object.keys(perFermata).length > 0 || so.predefinita != null) {
+            sostaMinimaCfg = { perFermata, predefinitaMin: so.predefinita };
+            log.info(`VSP sosta minima: ${Object.keys(perFermata).length} capolinea col loro valore`
+              + (so.predefinita != null ? `, ${so.predefinita}′ per gli altri` : ""));
+          }
+        } catch (e: any) {
+          log.info(`VSP sosta minima non letta (${e?.message ?? e}): 0′ allo stesso capolinea come prima`);
+        }
+      }
     }
 
     // 5e. NORMATIVA VSP: cambi linea, tripper, sosta capolinea,
@@ -1064,6 +1115,8 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
       // Robustezza ai ritardi (buffer δ data-driven)
       ...(robustnessCfg ? { robustness: robustnessCfg } : {}),
+      // Sosta minima al capolinea (per fermata, nodo o progetto)
+      ...(sostaMinimaCfg ? { sostaMinima: sostaMinimaCfg } : {}),
       // Normativa VSP
       ...(normativaCfg ? { normativa: normativaCfg } : {}),
       // Sagoma: fasce di punta, tetti di declassamento, flotta per tipologia
