@@ -962,7 +962,9 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId/percorrenze-re
       regole: {
         campioniMinimi: CAMPIONI_MINIMI, margineMin: MARGINE_S / 60, stessoCapolineaEntroM: STESSO_CAPOLINEA_M,
         reale: "mediana e 85° percentile dei tratti percorsi di seguito da qualunque linea, all'ora della corsa (o della giornata se l'ora ha pochi dati)",
-        deltaFinale: "attesa al capolinea fino alla prossima partenza della STESSA linea dallo stesso capolinea (stessa fermata, stesso nodo o entro 250 m); i concatenamenti fra linee li dicono i turni macchina",
+        deltaFinale: "attesa al capolinea fino alla prossima partenza della STESSA linea dallo stesso capolinea (stessa fermata, stesso nodo o entro 250 m), anche negativa se riparte fino a 3′ prima dell'arrivo; i concatenamenti fra linee li dicono i turni macchina",
+        p85Corsa: "mediana della corsa più gli scarti 85°−mediana dei tratti combinati con correlazione 0,3 (né tutti i tratti male insieme, né del tutto indipendenti)",
+        capolinea: "il primo tratto da un capolinea può includere la sosta del bus in partenza: va letto con cautela",
         giudizio: "assorbe = il delta copre il ritardo dell'85° percentile con 2′ di margine; al_limite = copre solo il ritardo mediano; insufficiente = nemmeno quello; rientro = nessuna corsa dopo",
       },
       varianti: variantIds.map(vid => {
