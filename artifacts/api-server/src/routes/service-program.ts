@@ -58,6 +58,7 @@ import { arresto } from "../lib/arresto";
 import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
 import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli, CORSIA_GIRO, TEMPO_MASSIMO_GIRO } from "../lib/ottimizza-veicoli/tempi";
 import { prontoPerScheduler } from "../lib/pronto-scheduler-db";
+import { applicaProfili, profiliDelGiro } from "../lib/profili-regole";
 import { messaggioRifiuto } from "../lib/pronto-scheduler";
 const router: IRouter = Router();
 
@@ -1705,6 +1706,19 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       }
     }
 
+    // I PROFILI DELLE REGOLE, come la Fucina: azienda, poi progetto, poi
+    // la richiesta (vince). Se non si leggono, il giro parte coi suoi valori
+    // e lo dice nei parametri.
+    let profiliUsati: { vsp: string | null; crew: string | null } | { errore: string } = { vsp: null, crew: null };
+    try {
+      const pr = applicaProfili(runBody, await profiliDelGiro(userId, psProjectId), mode, serviceType);
+      Object.assign(runBody, pr.corpo);
+      profiliUsati = pr.usati;
+    } catch (e: any) {
+      req.log.warn({ err: e?.message }, "agent-optimize: profili delle regole non letti");
+      profiliUsati = { errore: "profili delle regole non letti: valori della richiesta e di default" };
+    }
+
     const job: AgentOptimizeJob = {
       id: randomUUID(),
       userId, psProjectId, mode,
@@ -1715,6 +1729,8 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         date: rawDate, mode, intensity, timeLimit, serviceType,
         routes: routes.length, vehicleSource, feedSource, depots: depotsSel?.length ?? 0,
         ...(udpRefresh ? { udpRefresh } : {}),
+        // quali profili delle regole ha usato il giro (due giri con profili diversi non si confrontano)
+        profiliRegole: profiliUsati,
         ...(mode === "vcsp" ? {
           rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit,
           earlyStopPatience: runBody.vcsp.earlyStopPatience ?? null,
