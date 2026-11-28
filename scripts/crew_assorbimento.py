@@ -32,7 +32,9 @@ Come lavora
    (car_trips_of_duties + _simulate_car_pool): mai oltre il tetto, mai un
    ritiro senza auto in più. I tetti percentuali (semiunici, spezzati)
    scendono con il numero dei turni: nella ricerca sono una penalità forte,
-   rigidi all'accettazione.
+   rigidi all'accettazione. I vincoli globali dell'operatore
+   (bds.vincoliGlobali, es. «solo turni interi») pesano nella ricerca più di
+   due turni per ogni turno fuori vincolo.
 5. ACCETTAZIONE. La soluzione nuova sostituisce quella del solver solo se:
    lo score di _score_solution scende, le violazioni normative non
    aumentano, i tetti percentuali e i vincoli globali non peggiorano, il
@@ -82,6 +84,10 @@ PESO_SOSTA_15 = 0.13
 PESO_TURNO_RICERCA = 2.0
 # Un turno oltre i tetti percentuali, nella ricerca, costa come due turni
 PESO_SFORO_TETTI = 2.0
+# Un turno fuori da un vincolo globale (bds.vincoliGlobali, es. «solo turni
+# interi»): nel CP-SAT costa in modo proibitivo, qui pesa più di due turni,
+# così togliere un turno non vale mai un turno di un tipo vietato.
+PESO_SFORO_VINCOLI = 5.0
 # Mossa ELIMINA (un turno corto distribuito sugli altri): quanto spesso, e
 # fra quanti dei turni più corti si sceglie
 P_ELIMINA = 0.01
@@ -172,6 +178,9 @@ class _Assorbitore:
         self.rules = config.get("shiftRules", v4.SHIFT_RULES)
         self.rates = v4.CostRates.from_config(config)
         self.peso_turno = max(v4.SCORE_PER_DUTY, self.rates.hourly_rate * (self.rates.target_work_min / 60.0))
+        # i vincoli globali che si contano dai soli tipi dei turni (senza residenza)
+        self.vincoli_ricerca = [v for v in (getattr(v4, "VINCOLI_GLOBALI", None) or [])
+                                if v.get("tipo") in ("numerico", "percentuale") and not v.get("perResidenza")]
         self.costo_minuto = self.rates.hourly_rate / 60.0
         self.target = max(60, int(self.rates.target_work_min or 390))
         self.blocks = {b.vehicle_id: b for b in blocks}
@@ -384,6 +393,14 @@ class _Assorbitore:
                 sforo += max(0, tipi.get(kind, 0) - allowed)
         return sforo
 
+    def sforo_vincoli(self, valutati: list) -> int:
+        """Turni oltre i vincoli globali numerici e percentuali sull'intera
+        soluzione (quelli per residenza, e le medie, li guarda solo
+        l'accettazione finale): la stessa misura di sforo_vincoli_globali."""
+        if not self.vincoli_ricerca:
+            return 0
+        return _sforo_conteggi(self.vincoli_ricerca, Counter(v[0].duty_type for v in valutati), len(valutati))
+
     def _ordina(self, ids: list[int]) -> list[int]:
         return sorted(ids, key=self._chiave_tempo)
 
@@ -453,9 +470,11 @@ class _Assorbitore:
         peso_sforo = PESO_SFORO_TETTI * self.peso_turno
 
         peso_n = PESO_TURNO_RICERCA * self.peso_turno
+        peso_vincoli = PESO_SFORO_VINCOLI * self.peso_turno
 
         def costo_ricerca(vs: list) -> float:
-            return sum(v[2] for v in vs) + peso_n * len(vs) + peso_sforo * self.sforo_tetti(vs)
+            return (sum(v[2] for v in vs) + peso_n * len(vs) + peso_sforo * self.sforo_tetti(vs)
+                    + peso_vincoli * self.sforo_vincoli(vs))
 
         cur = costo_ricerca(val)
         best = (cur, [list(d) for d in sol])
@@ -581,6 +600,8 @@ def assorbi(duties: list, blocks: list, config: dict, clusters: list, bds: Any,
         break
     info.update(secondi=round(time.monotonic() - t_start, 1), candidatiProvati=len(motivi) + (1 if scelta else 0),
                 autoPrima=prima["auto"], conflittiAutoPrima=prima["conflittiAuto"])
+    if getattr(v4, "VINCOLI_GLOBALI", None):
+        info["sforoVincoliPrima"] = prima["vincoli"]
     if scelta is None:
         motivo = motivi[0] if motivi else "nessun miglioramento"
         info.update(turniDopo=len(duties), accettata=False, motivo=motivo, scoreDopo=None)
@@ -588,6 +609,8 @@ def assorbi(duties: list, blocks: list, config: dict, clusters: list, bds: Any,
         return duties, info
     k, candidati, score_dopo = scelta
     dopo = _controlli(v4, candidati, bds, clusters)
+    if getattr(v4, "VINCOLI_GLOBALI", None):
+        info["sforoVincoliDopo"] = dopo["vincoli"]
     info.update(scoreDopo=round(score_dopo, 1), autoDopo=dopo["auto"], conflittiAutoDopo=dopo["conflittiAuto"],
                 tettoAuto=int(getattr(v4, "MAX_COMPANY_CARS", 0) or 0), candidatoScelto=k)
 
@@ -605,17 +628,64 @@ def assorbi(duties: list, blocks: list, config: dict, clusters: list, bds: Any,
     return candidati, info
 
 
+def _sforo_conteggi(vincoli: list, tipi: Counter, totale: int) -> int:
+    """Turni da togliere (o da aggiungere) perché i vincoli numerici e
+    percentuali siano rispettati, su un gruppo di turni."""
+    sforo = 0
+    for v in vincoli:
+        cnt = sum(tipi.get(t, 0) for t in v.get("tipologie") or [])
+        if v.get("tipo") == "numerico":
+            if v.get("max") is not None:
+                sforo += max(0, cnt - int(v["max"]))
+            if v.get("min") is not None:
+                sforo += max(0, int(v["min"]) - cnt)
+        elif v.get("tipo") == "percentuale" and totale > 0:
+            if v.get("maxPct") is not None:
+                sforo += max(0, math.ceil(cnt - float(v["maxPct"]) * totale / 100.0 - 1e-9))
+            if v.get("minPct") is not None:
+                sforo += max(0, math.ceil(float(v["minPct"]) * totale / 100.0 - cnt - 1e-9))
+    return sforo
+
+
+def sforo_vincoli_globali(v4: Any, duties: list) -> int:
+    """Quanto la soluzione è fuori dai vincoli globali: i turni oltre i
+    vincoli numerici e percentuali (per residenza compresi), più uno per ogni
+    vincolo di media non rispettato. Contare i vincoli non rispettati non
+    bastava: con un vincolo già violato dal solver (es. «solo turni interi»
+    e otto turni di altri tipi) una soluzione con dodici turni vietati
+    risultava «non peggiore»."""
+    vincoli = getattr(v4, "VINCOLI_GLOBALI", None) or []
+    if not vincoli:
+        return 0
+    sforo = 0
+    for v in vincoli:
+        if v.get("tipo") == "media":
+            continue
+        if v.get("perResidenza"):
+            gruppi: dict = {}
+            for d in duties:
+                gruppi.setdefault(v4._duty_residenza_id(d) or "?", []).append(d)
+            insiemi = list(gruppi.values())
+        else:
+            insiemi = [duties]
+        for g in insiemi:
+            sforo += _sforo_conteggi([v], Counter(d.duty_type for d in g), len(g))
+    for r in v4.evaluate_vincoli_globali(duties) or []:
+        if r.get("tipo") == "media" and not r.get("soddisfatto", True):
+            sforo += 1
+    return sforo
+
+
 def _controlli(v4: Any, duties: list, bds: Any, clusters: list) -> dict:
     """Quello che la soluzione deve rispettare, contato come in _concludi."""
     val = v4.validate_all_bds(duties, bds, clusters)
-    vg = v4.evaluate_vincoli_globali(duties) or []
     tetto = int(getattr(v4, "MAX_COMPANY_CARS", 0) or 0)
     if tetto > 0:
         import crew_scheduler_v3 as v3
         v3.COMPANY_CARS = tetto          # come _concludi: il pool col tetto dell'operatore
     pool = v4.compute_car_pool(duties, clusters)
     return {"violazioni": val["totalViolations"], "globali": len(val["globalViolations"]),
-            "vincoli": sum(1 for r in vg if not r.get("soddisfatto", True)),
+            "vincoli": sforo_vincoli_globali(v4, duties),
             "auto": v4._cars_out_demand_peak(pool), "tetto": tetto,
             "conflittiAuto": sum(1 for m in pool if m.car_id is None)}
 
