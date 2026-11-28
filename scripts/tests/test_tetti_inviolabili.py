@@ -255,6 +255,21 @@ def test_la_sosta_di_quindici_minuti_e_un_avvertimento():
     assert res.nastro_ok and res.lavoro_ok
 
 
+def test_un_intero_senza_sosta_e_senza_violazioni_e_valido():
+    """L'avvertimento non rende scorretto il turno. Prima la sosta mancante
+    entrava nell'esito «valid»: un intero senza nessuna violazione compariva
+    «scorretto» nella Fucina, e il motivo restava vuoto (A108 della domenica
+    di Ancona)."""
+    d = _duty("intero", nastro=260, lavoro=260)   # sotto ogni tetto, nessuna sosta dentro
+    res = v4.validate_duty_bds(d, BDS, CLUSTERS)
+    assert res.violations == [] and any("sosta" in w for w in res.warnings), res.to_dict()
+    assert res.valid, res.to_dict()
+    out = res.to_dict()
+    assert out["valid"] is True and out["sostaCapolinea"] is False, "l'esito della sosta resta visibile"
+    # e una violazione vera continua a rendere scorretto il turno
+    assert not v4.validate_duty_bds(_duty("intero", nastro=441, lavoro=441), BDS, CLUSTERS).valid
+
+
 def test_i_tetti_restano_violazioni_anche_senza_la_sosta():
     """Declassare la sosta non deve ammorbidire nient'altro."""
     d = _duty("intero", nastro=441, lavoro=441)
