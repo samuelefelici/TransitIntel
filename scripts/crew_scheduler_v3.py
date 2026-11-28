@@ -1442,50 +1442,27 @@ def same_bus_consecutive(s1, s2, segs_by_vehicle: dict[str, list] | None) -> boo
     return True
 
 
-def compute_car_pool(
+def car_trips_of_duties(
     duties: list[DriverDutyV3],
     clusters: list[Cluster],
+    segs_by_vehicle: dict[str, list] | None = None,
+    silenzioso: bool = False,
 ) -> list[CarTrip]:
-    """
-    Calcola tutti i viaggi auto aziendale necessari.
-
-    Per ogni RIPRESA (segmento) di un turno:
-      - Se il conducente deve raggiungere un capolinea dal deposito → DELIVER
-        (guida auto deposito→cluster, la lascia lì)
-      - Se il conducente finisce a un capolinea e deve tornare al deposito → PICKUP
-        (prende auto dal cluster, guida cluster→deposito)
-
-    Turno singolo (1 segmento):
-      • DELIVER: deposito → primo cluster   (durata = transfer_min)
-      • PICKUP:  ultimo cluster → deposito   (durata = transfer_back_min)
-
-    Turno biripresa - STESSO veicolo su entrambi i segmenti:
-      • DELIVER: deposito → primo cluster del seg1   (durata = transfer_min)
-      • PICKUP:  ultimo cluster del seg2 → deposito  (durata = transfer_back_min)
-      (durante l'interruzione il conducente resta col bus — nessun viaggio auto)
-
-    Turno biripresa - VEICOLI DIVERSI:
-      • DELIVER₁: deposito → primo cluster seg1      (transfer_min)
-      • PICKUP₁:  ultimo cluster seg1 → deposito     (transfer da ultimo cluster seg1)
-      • DELIVER₂: deposito → primo cluster seg2      (transfer da primo cluster seg2)
-      • PICKUP₂:  ultimo cluster seg2 → deposito     (transfer_back_min)
-      (durante l'interruzione il conducente torna al deposito e poi riparte)
-
-    L'assegnazione auto avviene con simulazione cronologica:
-    - Ogni auto ha una posizione (deposito o cluster X).
-    - DELIVER: auto esce dal deposito, arriva al cluster.
-    - PICKUP: auto esce dal cluster, rientra al deposito.
-    """
+    """I viaggi in auto aziendale dei turni (consegne e ritiri, regole in
+    compute_car_pool), senza assegnare le auto. Separata perché la usa anche la
+    fase di assorbimento (crew_assorbimento.py), che conta i ritiri senza auto
+    a ogni mossa: `silenzioso` non scrive gli avvisi nel log."""
     cluster_names = {c.id: c.name for c in clusters}
 
     trips: list[CarTrip] = []
     # Pezzi per bus: «resta col mezzo nello stacco» vale solo se fra i due
     # pezzi dello stesso bus non c'è nessun altro conducente; altrimenti chi
     # sta in mezzo monta e smonta con l'auto e il nostro torna in deposito.
-    segs_by_vehicle: dict[str, list] = {}
-    for d in duties:
-        for s in d.segments:
-            segs_by_vehicle.setdefault(s.vehicle_id, []).append(s)
+    if segs_by_vehicle is None:
+        segs_by_vehicle = {}
+        for d in duties:
+            for s in d.segments:
+                segs_by_vehicle.setdefault(s.vehicle_id, []).append(s)
 
     for d in duties:
         if not d.segments:
@@ -1521,7 +1498,8 @@ def compute_car_pool(
                     transfer_min=t_out,
                 ))
             elif t_out > 0:
-                log(f"⚠️  Car pool: {d.driver_id} prima fermata '{first_seg.first_stop}' NON è in un cluster — no deliver")
+                if not silenzioso:
+                    log(f"⚠️  Car pool: {d.driver_id} prima fermata '{first_seg.first_stop}' NON è in un cluster — no deliver")
 
             # PICKUP
             if t_back > 0 and last_cluster:
@@ -1536,7 +1514,8 @@ def compute_car_pool(
                     transfer_min=t_back,
                 ))
             elif t_back > 0:
-                log(f"⚠️  Car pool: {d.driver_id} ultima fermata '{last_seg.last_stop}' NON è in un cluster — no pickup")
+                if not silenzioso:
+                    log(f"⚠️  Car pool: {d.driver_id} ultima fermata '{last_seg.last_stop}' NON è in un cluster — no pickup")
         else:
             # ── Biripresa su veicoli diversi ──
             # Il conducente torna al deposito tra le riprese
@@ -1563,7 +1542,8 @@ def compute_car_pool(
                         transfer_min=t_to_first,
                     ))
                 elif t_to_first > 0:
-                    log(f"⚠️  Car pool: {d.driver_id} seg{si+1} prima fermata '{seg.first_stop}' NON è in un cluster — no deliver")
+                    if not silenzioso:
+                        log(f"⚠️  Car pool: {d.driver_id} seg{si+1} prima fermata '{seg.first_stop}' NON è in un cluster — no deliver")
 
                 # PICKUP: ultimo cluster di questo segmento → deposito
                 if t_from_last > 0 and seg_last_cluster:
@@ -1578,7 +1558,47 @@ def compute_car_pool(
                         transfer_min=t_from_last,
                     ))
                 elif t_from_last > 0:
-                    log(f"⚠️  Car pool: {d.driver_id} seg{si+1} ultima fermata '{seg.last_stop}' NON è in un cluster — no pickup")
+                    if not silenzioso:
+                        log(f"⚠️  Car pool: {d.driver_id} seg{si+1} ultima fermata '{seg.last_stop}' NON è in un cluster — no pickup")
+
+    return trips
+
+
+def compute_car_pool(
+    duties: list[DriverDutyV3],
+    clusters: list[Cluster],
+) -> list[CarTrip]:
+    """
+    Calcola tutti i viaggi auto aziendale necessari.
+
+    Per ogni RIPRESA (segmento) di un turno:
+      - Se il conducente deve raggiungere un capolinea dal deposito → DELIVER
+        (guida auto deposito→cluster, la lascia lì)
+      - Se il conducente finisce a un capolinea e deve tornare al deposito → PICKUP
+        (prende auto dal cluster, guida cluster→deposito)
+
+    Turno singolo (1 segmento):
+      • DELIVER: deposito → primo cluster   (durata = transfer_min)
+      • PICKUP:  ultimo cluster → deposito   (durata = transfer_back_min)
+
+    Turno biripresa - STESSO veicolo su entrambi i segmenti:
+      • DELIVER: deposito → primo cluster del seg1   (durata = transfer_min)
+      • PICKUP:  ultimo cluster del seg2 → deposito  (durata = transfer_back_min)
+      (durante l'interruzione il conducente resta col bus — nessun viaggio auto)
+
+    Turno biripresa - VEICOLI DIVERSI:
+      • DELIVER₁: deposito → primo cluster seg1      (transfer_min)
+      • PICKUP₁:  ultimo cluster seg1 → deposito     (transfer da ultimo cluster seg1)
+      • DELIVER₂: deposito → primo cluster seg2      (transfer da primo cluster seg2)
+      • PICKUP₂:  ultimo cluster seg2 → deposito     (transfer_back_min)
+      (durante l'interruzione il conducente torna al deposito e poi riparte)
+
+    L'assegnazione auto avviene con simulazione cronologica:
+    - Ogni auto ha una posizione (deposito o cluster X).
+    - DELIVER: auto esce dal deposito, arriva al cluster.
+    - PICKUP: auto esce dal cluster, rientra al deposito.
+    """
+    trips = car_trips_of_duties(duties, clusters)
 
     # ── Assegnazione auto (simulazione cronologica) ──
     # Prima SENZA tetto, per misurare la domanda di auto e i ritiri che nessuna

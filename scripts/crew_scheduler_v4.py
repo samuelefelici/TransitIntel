@@ -5317,8 +5317,15 @@ def _imposta(user_config: dict, vehicle_shifts_raw: list, time_limit_sec: float,
 def _turni_dei_blocchi(vehicle_shifts_raw: list, config: dict, clusters: list, bds: "BDSConfig",
                       scadenza: float) -> tuple[list, list, list]:
     """Fasi 1-4: parsing, analisi, segmenti e ottimizzazione, con le regole
-    già impostate da _imposta. Restituisce turni (senza codici), blocchi e segmenti."""
+    già impostate da _imposta, poi la fase di ASSORBIMENTO (4b, crew_assorbimento.py)
+    nel tempo che le è riservato. Restituisce turni (senza codici), blocchi e segmenti."""
     global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS, SEGMENTATION_RESULT
+    # Il tempo della fase di assorbimento si toglie all'ottimizzazione: la
+    # scadenza del calcolo resta quella, il CP-SAT finisce un po' prima.
+    import crew_assorbimento
+    scadenza_finale = scadenza
+    riserva = crew_assorbimento.secondi_della_fase(config, _tempo_rimasto(scadenza))
+    scadenza = scadenza - riserva
     # ── Fase 1: Parsing ──
     global MAX_GUIDA_RIPRESA
     MAX_GUIDA_RIPRESA = int(getattr(bds.riprese, "max_guida_per_ripresa", 0) or 0)
@@ -5428,6 +5435,31 @@ def _turni_dei_blocchi(vehicle_shifts_raw: list, config: dict, clusters: list, b
         LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS = win_snap
         SEGMENTATION_RESULT = {"winner": win_label, "variants": results, "skipped": skipped}
         log(f"[V4][PAIR-AWARE] vince: {win_label}")
+
+    # ── Fase 4b: assorbimento dei turni corti (crew_assorbimento.py) ──
+    # Ritaglia i pezzi a ogni punto di cambio e prova a far assorbire i turni
+    # corti dagli altri, con le stesse regole e lo stesso costo del solver.
+    # La soluzione cambia solo se migliora e non rompe nessuna regola.
+    if riserva > 0 and duties and not _stop_requested.is_set():
+        report_progress("assorbimento", 65, f"Assorbimento dei turni corti ({riserva:.0f}s)")
+        # Al massimo i suoi secondi: se il CP-SAT ha finito prima, il calcolo
+        # non si allunga fino alla scadenza.
+        duties, info = crew_assorbimento.assorbi(duties, blocks, config, clusters, bds,
+                                                 min(scadenza_finale, time.monotonic() + riserva),
+                                                 stop=_stop_requested)
+        if info.get("accettata"):
+            segments = sorted((sg for d in duties for sg in d.segments),
+                              key=lambda sg: (sg.vehicle_id, sg.start_min))
+            per_bus: dict[str, list] = {}
+            for sg in segments:
+                per_bus.setdefault(sg.vehicle_id, []).append(sg)
+            for b in blocks:
+                b.segments = per_bus.get(b.vehicle_id, [])
+        LAST_OPTIMIZATION_ANALYSIS = dict(LAST_OPTIMIZATION_ANALYSIS or {})
+        LAST_OPTIMIZATION_ANALYSIS["assorbimento"] = info
+    else:
+        LAST_OPTIMIZATION_ANALYSIS = dict(LAST_OPTIMIZATION_ANALYSIS or {})
+        LAST_OPTIMIZATION_ANALYSIS["assorbimento"] = {"attiva": False}
 
     return duties, blocks, segments
 
