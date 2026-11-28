@@ -302,6 +302,19 @@ Suddividere ogni **turno macchina** (vehicle block) in segmenti che possano esse
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
+│ FASE 7b — ASSORBIMENTO DEI TURNI CORTI (crew_assorbimento.py)       │
+│   Ritaglia i pezzi a OGNI punto di cambio (non solo ai tagli che    │
+│   sopravvivono al collasso) e prova a far assorbire i turni corti   │
+│   dagli altri: sposta 1-3 atomi, scambia le code fra due turni,     │
+│   ELIMINA un turno corto distribuendone i pezzi. Stesse funzioni    │
+│   del solver (single/pair_nastro_work, _feasible_pair,              │
+│   classify_duty, validate_duty_bds, compute_duty_cost_v4).          │
+│   Tempo: 20% del budget (max 60s), tolto al CP-SAT. Cambia la       │
+│   soluzione solo se lo score scende e nessuna regola peggiora.      │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
 │ FASE 8 — VERIFICA NORMATIVA COMPLETA                                │
 │   Ogni duty viene controllato contro:                               │
 │     ✓ Nastro max (435/555/630 min)                                 │
@@ -322,6 +335,22 @@ Suddividere ogni **turno macchina** (vehicle block) in segmenti che possano esse
 │   • Segnala conflitti (auto non disponibile a un dato orario)      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### 🧩 Fase di assorbimento: quando serve e come si regola
+
+Il CP-SAT sceglie fra pochi tagli per turno macchina e spesso lascia turni
+corti a mezzogiorno, supplementi, interi da tre ore. La fase 7b li ricompone
+sulle stesse vetture e con gli stessi orari. Sulla domenica di Ancona (15
+vetture, 340 corse; `scripts/tests/fixtures/domenica_ancona_15_vetture.json`)
+porta i 36 turni di un giro VCSP a 30–31, senza violazioni e senza superare
+il tetto delle auto aziendali.
+
+- `config.assorbimento.attivo` (default `true`): `false` la spegne.
+- `config.assorbimento.secondi`: tempo della fase; senza, il 20% del tempo
+  del calcolo, al massimo 60 s, mai più di metà. Sotto il secondo non parte.
+- Il resoconto è in `optimizationAnalysis.assorbimento` (turni prima e dopo,
+  score, mosse provate, auto aziendali, motivo se non ha cambiato niente).
+- Gli orari non si toccano: gli spostamenti di corsa restano alla sonda.
 
 ### 📤 Output
 ```jsonc
@@ -570,6 +599,7 @@ Classifica completa di tutti gli scenari con:
 scripts/
 ├── vehicle_scheduler_cpsat.py    # Step 1: Vehicle Scheduling (1118 righe)
 ├── crew_scheduler_v4.py          # Step 2: Crew Scheduling (2729 righe)
+├── crew_assorbimento.py          # Step 2, fase 7b: assorbimento dei turni corti
 ├── optimizer_common.py           # Dataclass + costanti condivise
 └── cost_model.py                 # Modello costi (CostRates, DutyCostBreakdown)
 
