@@ -109,6 +109,47 @@ def test_assorbimento_toglie_turni_sulle_stesse_vetture():
     assert corti_dopo < corti_prima
 
 
+SOLO_INTERI = {"bds": {"vincoliGlobali": [{"tipo": "numerico", "tipologie": ["semiunico", "spezzato", "supplemento"],
+                                             "max": 0, "label": "solo turni interi"}]}}
+
+
+def test_con_il_vincolo_solo_interi_non_crea_turni_di_altri_tipi():
+    """Il giro ha 8 turni non interi (5 semiunici, 2 spezzati, 1 supplemento).
+    Con il vincolo globale «solo turni interi» l'assorbimento non può
+    aggiungerne: la ricerca li paga più di due turni, e l'accettazione
+    misura quanti turni sono fuori vincolo, non quanti vincoli."""
+    config, clusters, bds, blocks, duties, _ = _giro()
+    fuori = lambda ds: sum(1 for d in ds if d.duty_type != "intero")  # noqa: E731
+    v4.apply_vincoli_globali_config(SOLO_INTERI)
+    try:
+        assert ca.sforo_vincoli_globali(v4, duties) == fuori(duties) == 8
+        prima = _corse(duties)
+        nuovi, info = ca.assorbi(duties, blocks, config, clusters, bds,
+                                 scadenza=time.monotonic() + 600, max_iterazioni=150000)
+        assert fuori(nuovi) <= 8, Counter(d.duty_type for d in nuovi)
+        assert info["sforoVincoliPrima"] == 8
+        if info["accettata"]:
+            assert info["sforoVincoliDopo"] == fuori(nuovi) <= 8
+            assert _corse(nuovi) == prima
+            assert v4.validate_all_bds(nuovi, bds, clusters)["totalViolations"] == 0
+    finally:
+        v4.apply_vincoli_globali_config({})
+
+
+def test_lo_sforo_dei_vincoli_si_misura_in_turni():
+    _, _, _, _, duties, _ = _giro()
+    v4.apply_vincoli_globali_config({"bds": {"vincoliGlobali": [
+        {"tipo": "numerico", "tipologie": ["semiunico"], "max": 2},           # 5 semiunici: 3 di troppo
+        {"tipo": "percentuale", "tipologie": ["spezzato"], "maxPct": 3},      # 2 su 36 = 5,6%: 1 di troppo
+        {"tipo": "numerico", "tipologie": ["intero"], "min": 30},             # 28 interi: 2 in meno
+    ]}})
+    try:
+        assert ca.sforo_vincoli_globali(v4, duties) == 3 + 1 + 2
+    finally:
+        v4.apply_vincoli_globali_config({})
+    assert ca.sforo_vincoli_globali(v4, duties) == 0
+
+
 def _anelli(vid, t0, t1, passo=30, durata=25):
     trips, k, t = [], 0, t0
     while t + durata <= t1:
