@@ -686,8 +686,14 @@ class BDSValidation:
 
     @property
     def valid(self) -> bool:
+        # La sosta di 15' al capolinea dentro l'intero è un AVVERTIMENTO (si
+        # cerca, non si impone: vedi validate_duty_bds): il suo esito resta in
+        # sosta_capolinea_ok, ma non rende scorretto il turno. Prima lo faceva,
+        # e un intero senza violazioni compariva «scorretto» senza motivo.
+        # La pausa pasto entra qui solo con severità "vincolo" (con "avviso"
+        # intervallo_pasto_ok resta vero).
         return (self.classificazione_valida and self.rd131_ok
-                and self.sosta_capolinea_ok and self.lavoro_ok
+                and self.lavoro_ok
                 and self.intervallo_pasto_ok and self.stacco_minimo_ok
                 and self.nastro_ok and self.riprese_ok)
 
